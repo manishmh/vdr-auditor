@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { StoredFinding } from "../findings/schema";
@@ -52,7 +53,7 @@ export class LocalFileStore implements DocumentStore {
   }): Promise<DocumentRecord> {
     const now = new Date().toISOString();
     const record: DocumentRecord = {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       filename: input.filename,
       mimeType: input.mimeType,
       sizeBytes: input.sizeBytes,

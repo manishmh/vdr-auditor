@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config";
 import { verifyCandidate } from "./evidence";
 import { CandidateFindingSchema, type StoredFinding } from "./findings/schema";
@@ -185,7 +186,7 @@ async function analyzeCreated(
     findings.push({
       ...parsed.data,
       confidence: normalizeConfidence(parsed.data.confidence),
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       documentId: document.id,
       pageStart: location.pageStart,
       pageEnd: location.pageEnd,

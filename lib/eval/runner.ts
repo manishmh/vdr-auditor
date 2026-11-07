@@ -1,3 +1,4 @@
+import { subtle } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,7 +77,7 @@ async function runOneFixture(
   const started = Date.now();
   try {
     const text = fixture.pages.map((p) => p.text).join("\n");
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    const digest = await subtle.digest("SHA-256", new TextEncoder().encode(text));
     const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
     const document = await store.createDocument({
       filename: `${fixture.id}.eval.pdf`,

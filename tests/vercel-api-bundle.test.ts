@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { Script } from "node:vm";
 import { describe, expect, it } from "vitest";
+import { makePdf } from "./helpers/make-pdf";
 
 /**
  * Guards the Vercel API function against two production failures:
@@ -54,7 +55,22 @@ describe("Vercel API bundle (backend/dist/vercel-api.cjs)", () => {
 
   it("keeps node_modules external (traced by Vercel, incl. pdfjs-dist for fonts)", () => {
     expect(code).toMatch(/require\(["']express["']\)/);
-    expect(code).toMatch(/require\(["']pdfjs-dist\/legacy\/build\/pdf\.mjs["']\)/);
+  });
+
+  it("never statically requires an ESM (.mjs) module (ERR_REQUIRE_ESM repro)", () => {
+    // The production crash: require() of pdfjs-dist's ESM-only build from
+    // the CJS bundle throws on Node runtimes without require(esm). The
+    // parser must load via dynamic import() instead (see loadPdfjs).
+    expect(code).not.toMatch(/require\(["'][^"']*\.mjs["']\)/);
+    expect(code).toContain('import("pdfjs-dist/legacy/build/pdf.mjs")');
+  });
+
+  it("takes crypto from node:crypto, never the ambient global", () => {
+    // The ambient webcrypto global is absent in some runtimes (verified:
+    // Node 18 file context throws `crypto is not defined`). Server code
+    // must import randomUUID/subtle from node:crypto instead.
+    expect(code).not.toMatch(/[^a-zA-Z0-9_.]crypto\.(subtle|randomUUID)/);
+    expect(code).toMatch(/require\(["']node:crypto["']\)/);
   });
 
   it("keeps .js/.cjs as CommonJS (root package.json must not declare type: module)", () => {
@@ -101,10 +117,25 @@ describe("Vercel API stub (api/index.js)", () => {
 });
 
 describe("Vercel API loads like production loads it", () => {
-  it("requires as CJS and serves /api/health", async () => {
+  it("requires as CJS and serves health, listing, and upload", async () => {
     // Build to a temp dir UNDER the repo root so the bundle's external
     // requires resolve the repo's node_modules, as in the deployed function.
     const dir = mkdtempSync(join(ROOT, ".tmp-vercel-verify-"));
+    // Production-like env, set BEFORE the bundle loads: config is cached
+    // at first require, as in the deployed function.
+    const savedEnv = {
+      PILOT_ACCESS_TOKEN: process.env.PILOT_ACCESS_TOKEN,
+      STORAGE_BACKEND: process.env.STORAGE_BACKEND,
+      STORAGE_DIR: process.env.STORAGE_DIR,
+      INFERENCE_PROVIDER: process.env.INFERENCE_PROVIDER,
+    };
+    const load = createRequire(join(ROOT, "package.json"));
+    const crypto = load("node:crypto") as typeof import("node:crypto");
+    const token = crypto.randomBytes(32).toString("hex");
+    process.env.PILOT_ACCESS_TOKEN = token;
+    process.env.STORAGE_BACKEND = "local";
+    process.env.STORAGE_DIR = join(dir, "store");
+    process.env.INFERENCE_PROVIDER = "mock";
     try {
       buildSync({
         entryPoints: [join(ROOT, "backend/src/vercel.ts")],
@@ -115,7 +146,6 @@ describe("Vercel API loads like production loads it", () => {
         outfile: join(dir, "vercel-api.cjs"),
         logLevel: "silent",
       });
-      const load = createRequire(join(ROOT, "package.json"));
       const bundled = load(join(dir, "vercel-api.cjs")) as {
         default?: unknown;
       };
@@ -130,29 +160,76 @@ describe("Vercel API loads like production loads it", () => {
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       try {
         const port = (server.address() as { port: number }).port;
-        const body = await new Promise<string>((resolve, reject) => {
-          http
-            .get({ port, host: "127.0.0.1", path: "/api/health" }, (res) => {
-              let data = "";
-              res.on("data", (chunk) => (data += chunk));
-              res.on("end", () => {
-                try {
-                  expect(res.statusCode).toBe(200);
-                  resolve(data);
-                } catch (err) {
-                  reject(err);
-                }
-              });
-            })
-            .on("error", reject);
+        const request = (
+          path: string,
+          options: { method?: string; headers?: Record<string, string>; body?: Buffer } = {},
+        ): Promise<{ status: number | undefined; body: string }> =>
+          new Promise((resolve, reject) => {
+            const req = http.request(
+              { port, host: "127.0.0.1", path, method: options.method ?? "GET", headers: options.headers },
+              (res) => {
+                let data = "";
+                res.on("data", (chunk) => (data += chunk));
+                res.on("end", () => resolve({ status: res.statusCode, body: data }));
+              },
+            );
+            req.on("error", reject);
+            if (options.body) req.write(options.body);
+            req.end();
+          });
+
+        const health = await request("/api/health");
+        expect(health.status).toBe(200);
+        expect(health.body).toBe('{"ok":true}');
+
+        const unauth = await request("/api/documents");
+        expect(unauth.status).toBe(401);
+
+        const authed = await request("/api/documents", {
+          headers: { Authorization: `Bearer ${token}` },
         });
-        expect(body).toBe('{"ok":true}');
+        expect(authed.status).toBe(200);
+
+        // Upload exercises the lazy dynamic import of pdfjs for real.
+        const pdf = makePdf([
+          "This agreement requires written consent for any change of control transaction by either party.",
+          "Neither party shall face uncapped liability: the aggregate liability cap is five million dollars.",
+        ]);
+        const boundary = "vitestboundary";
+        const payload = Buffer.concat([
+          Buffer.from(
+            `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="upload.pdf"\r\n` +
+              `Content-Type: application/pdf\r\n\r\n`,
+          ),
+          pdf,
+          Buffer.from(`\r\n--${boundary}--\r\n`),
+        ]);
+        const upload = await request("/api/documents", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": `multipart/form-data; boundary=${boundary}`,
+            "Content-Length": String(payload.length),
+          },
+          body: payload,
+        });
+        expect(upload.status).toBe(201);
+        const parsed = JSON.parse(upload.body) as {
+          document: { status: string };
+          findings: unknown[];
+        };
+        expect(parsed.document.status).toBe("completed");
+        expect(Array.isArray(parsed.findings)).toBe(true);
       } finally {
         await new Promise<void>((resolve, reject) =>
           server.close((err) => (err ? reject(err) : resolve())),
         );
       }
     } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30000);

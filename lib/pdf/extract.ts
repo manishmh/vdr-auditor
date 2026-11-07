@@ -1,7 +1,30 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
+
+type PdfJsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
+
+let pdfjsPromise: Promise<PdfJsModule> | null = null;
+
+/**
+ * Load the ESM-only pdfjs-dist build lazily via dynamic import(). A static
+ * import would become a top-level require() of a .mjs file in the CommonJS
+ * production bundle, which throws ERR_REQUIRE_ESM on Node runtimes without
+ * require(esm) support — crashing every route at load time, including
+ * /api/health. Dynamic import() of ESM works from CJS on all supported
+ * Node versions, and pdf.js only loads when a PDF actually needs parsing.
+ */
+async function loadPdfjs(): Promise<PdfJsModule> {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import("pdfjs-dist/legacy/build/pdf.mjs");
+  }
+  try {
+    return await pdfjsPromise;
+  } catch (err) {
+    pdfjsPromise = null;
+    throw err;
+  }
+}
 
 export type PdfFailureReason = "malformed" | "encrypted" | "too_many_pages" | "missing_assets";
 
@@ -100,6 +123,7 @@ export async function extractPdfText(
       "Configured PDF font assets are missing; refusing to extract with degraded font mapping.",
     );
   }
+  const pdfjs = await loadPdfjs();
   const loadingTask = pdfjs.getDocument({ data, useWorkerFetch: false, standardFontDataUrl });
   let doc;
   try {

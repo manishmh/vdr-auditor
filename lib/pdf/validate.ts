@@ -1,3 +1,5 @@
+import { subtle } from "node:crypto";
+
 export type UploadRejectionReason =
   | "empty_file"
   | "too_large"
@@ -50,7 +52,7 @@ export function isDeclaredBodyTooLarge(contentLength: string | null, maxBytes: n
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
+  const digest = await subtle.digest("SHA-256", bytes as BufferSource);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 

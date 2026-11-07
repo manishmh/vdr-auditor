@@ -1,3 +1,4 @@
+import { subtle } from "node:crypto";
 import type { InferenceProvider } from "./inference/types";
 import type { PageText } from "./pdf/extract";
 import { analyzeAndPersist, type ProcessOutcome } from "./pipeline";
@@ -61,7 +62,7 @@ export async function seedDemoDocument(
     return { document: existing, findings, droppedInvalid: 0, droppedUnverified: 0, sectionErrors: [], created: false };
   }
   const sizeBytes = new TextEncoder().encode(DEMO_PAGES.map((p) => p.text).join("\n")).length;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(DEMO_FILENAME));
+  const digest = await subtle.digest("SHA-256", new TextEncoder().encode(DEMO_FILENAME));
   const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
   const document = await store.createDocument({
     filename: DEMO_FILENAME,

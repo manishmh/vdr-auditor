@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Binary, Db, MongoServerError } from "mongodb";
 import type { StoredFinding } from "../../../lib/findings/schema";
 import type { PageText } from "../../../lib/pdf/extract";
@@ -80,7 +81,7 @@ export class MongoStore implements DocumentStore {
   }): Promise<DocumentRecord> {
     const now = new Date();
     const doc: DocumentDoc = {
-      _id: crypto.randomUUID(),
+      _id: randomUUID(),
       filename: input.filename,
       mimeType: input.mimeType,
       sizeBytes: input.sizeBytes,
@@ -239,7 +240,7 @@ export class MongoStore implements DocumentStore {
     );
     if (!row) return null;
     await this.db.collection<ReviewEventDoc>("reviewEvents").insertOne({
-      _id: crypto.randomUUID(),
+      _id: randomUUID(),
       documentId,
       findingId,
       action: patch.status !== undefined ? `finding.status:${patch.status}` : "finding.note",
