@@ -4,5 +4,6 @@
     "api/index.ts": {
       "includeFiles": "node_modules/pdfjs-dist/standard_fonts/**"
     }
-  }
+  },
+  "rewrites": [{ "source": "/api/:path*", "destination": "/api/index" }]
 }
