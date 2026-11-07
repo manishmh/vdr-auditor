@@ -1,0 +1,17 @@
+{
+  "id": "ch-lia-02",
+  "label": "challenging",
+  "title": "High but stated liability cap",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "CONSTRUCTION CONTRACT\n\nBetween Granite Builders and Harborline Mall.\n\nSection 9. Liability Cap. Granite's total liability shall not exceed $50,000,000.\n\nSigned. Signature: Jack King. Signature: Kara Lane."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "A $50,000,000 cap is high, but it is a stated cap; magnitude is commercial judgment, not uncapped liability. Flagging it would be a false positive."
+  }
+}

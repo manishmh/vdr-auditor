@@ -1,0 +1,24 @@
+{
+  "id": "coc-01",
+  "label": "positive",
+  "title": "Change of control with termination right",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "MASTER SERVICES AGREEMENT\n\nThis Master Services Agreement is entered into by and between Alder Manufacturing Co. (\"Alder\") and Birchfield Labs LLC (\"Birchfield\").\n\nSection 8. Change of Control. In the event of a change of control of Birchfield, Alder may terminate this Agreement upon thirty (30) days written notice.\n\nExecuted by both parties. Signature: Dana Whitfield, CEO, Alder. Signature: Morgan Hale, Manager, Birchfield."
+    }
+  ],
+  "expected": {
+    "categories": ["change_of_control"],
+    "ambiguous": false,
+    "evidence": [
+      {
+        "category": "change_of_control",
+        "quote": "In the event of a change of control of Birchfield, Alder may terminate this Agreement upon thirty (30) days written notice.",
+        "pages": [1],
+        "severity": "high"
+      }
+    ],
+    "rationale": "Explicit change-of-control trigger (ownership change at Birchfield) with a stated termination consequence. Fully signed and no liability language, so no other category applies."
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "neg-01",
+  "label": "negative",
+  "title": "Plain services agreement, capped and signed",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "SERVICES AGREEMENT\n\nBetween Union Printworks and Vale Logistics.\n\nSection 2. Services. Vale will provide warehousing services as described in Exhibit A.\n\nSection 5. Limitation of Liability. Neither party's liability shall exceed the fees paid in the twelve months before the claim.\n\nSigned. Signature: Jamie Fox, Union. Signature: Casey Bell, Vale."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "Ordinary capped liability, no change-of-control language, fully signed. No target risk is present."
+  }
+}

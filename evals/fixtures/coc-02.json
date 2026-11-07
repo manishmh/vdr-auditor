@@ -1,0 +1,28 @@
+{
+  "id": "coc-02",
+  "label": "positive",
+  "title": "Change in ownership requiring consent",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "TRANSITION SERVICES AGREEMENT\n\nThis agreement is made between Copperline Inc. and Driftwood Co. regarding transition services.\n\nSection 1. Term. This agreement continues for two years."
+    },
+    {
+      "pageNumber": 2,
+      "text": "Section 9. Assignment. Neither party may assign this agreement without consent. Upon a change in ownership of either party, the other party must give prior written consent before any transfer of rights.\n\nAgreed and signed. Signature: Casey Lin for Copperline. Signature: Robin Park for Driftwood."
+    }
+  ],
+  "expected": {
+    "categories": ["change_of_control"],
+    "ambiguous": false,
+    "evidence": [
+      {
+        "category": "change_of_control",
+        "quote": "Upon a change in ownership of either party, the other party must give prior written consent before any transfer of rights.",
+        "pages": [2],
+        "severity": "high"
+      }
+    ],
+    "rationale": "Ownership-change trigger with a prior-written-consent consequence on page 2. Signed by both parties; no liability language present."
+  }
+}

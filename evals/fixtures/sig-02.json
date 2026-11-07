@@ -1,0 +1,24 @@
+{
+  "id": "sig-02",
+  "label": "positive",
+  "title": "No signature indicators at all",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "MEMORANDUM OF UNDERSTANDING\n\nBetween Meadowbrook Foods and Northgate Retail concerning a proposed distribution pilot.\n\nThe parties will negotiate pricing and delivery schedules in good faith during the sixty-day pilot period. Either party may end the pilot with written notice."
+    }
+  ],
+  "expected": {
+    "categories": ["missing_signature"],
+    "ambiguous": false,
+    "evidence": [
+      {
+        "category": "missing_signature",
+        "quote": "Either party may end the pilot with written notice.",
+        "pages": [1],
+        "severity": "low"
+      }
+    ],
+    "rationale": "No signature block, execution language, or signature indicators appear; the quoted passage shows how the document ends. A completeness signal only."
+  }
+}

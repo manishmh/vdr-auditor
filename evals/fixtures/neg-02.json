@@ -1,0 +1,17 @@
+{
+  "id": "neg-02",
+  "label": "negative",
+  "title": "Assignment consent is not change of control",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "SUPPLY AGREEMENT\n\nBetween Wexford Metals and Yarrow Foods.\n\nSection 4. Assignment. Neither party may assign this agreement without the prior written consent of the other party, which consent shall not be unreasonably withheld.\n\nSection 6. Liability. Each party's liability is capped at the contract value.\n\nExecuted. Signature: Drew Hall. Signature: Kim Ross."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "Assignment consent with a reasonableness qualifier is not a change-of-control trigger. Liability is capped and both parties signed."
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "id": "multi-02",
+  "label": "positive",
+  "title": "Unsigned draft with uncapped liability",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "DRAFT - PROFESSIONAL SERVICES AGREEMENT\n\nBetween Quarry Consulting and Redwood Ventures. DRAFT - NOT EXECUTED.\n\nSection 7. Liability. Quarry's liability shall be unlimited for willful misconduct.\n\nSection 9. Term. This draft expires if not signed within thirty days."
+    }
+  ],
+  "expected": {
+    "categories": ["uncapped_liability", "missing_signature"],
+    "ambiguous": false,
+    "evidence": [
+      {
+        "category": "uncapped_liability",
+        "quote": "Quarry's liability shall be unlimited for willful misconduct.",
+        "pages": [1],
+        "severity": "high"
+      },
+      {
+        "category": "missing_signature",
+        "quote": "Section 9. Term. This draft expires if not signed within thirty days.",
+        "pages": [1],
+        "severity": "low"
+      }
+    ],
+    "rationale": "An unexecuted draft: no signature block or indicators (the word 'signed' in the expiry clause is not execution), plus an unlimited-liability clause for willful misconduct."
+  }
+}

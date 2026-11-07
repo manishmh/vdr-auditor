@@ -1,0 +1,17 @@
+{
+  "id": "neg-04",
+  "label": "negative",
+  "title": "Narrow capped indemnity",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "EVENT SERVICES AGREEMENT\n\nBetween Beacon Events and Cinder Hall.\n\nSection 7. Indemnity. Each party shall indemnify the other for direct damages caused by its negligence, up to the amounts paid under this agreement.\n\nSigned. Signature: Lou Grant. Signature: Ash Ford."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "The indemnity is narrow (own negligence, direct damages only) and capped at amounts paid — not broad or uncapped. No change-of-control language; signed."
+  }
+}

@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local demo storage (uploads, extracted text, findings)
+.data/
+# bundled Express API output
+backend/dist/
+# evaluation run reports (may reference live model runs)
+evals/reports/

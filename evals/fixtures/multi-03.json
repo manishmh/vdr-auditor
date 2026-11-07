@@ -1,0 +1,40 @@
+{
+  "id": "multi-03",
+  "label": "positive",
+  "title": "All three risk categories",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "MERGER TRANSITION AGREEMENT\n\nBetween Sable Holdings and Tidalwave Energy.\n\nSection 3. Change of Control. A change of control of either party requires the written consent of the other party before closing."
+    },
+    {
+      "pageNumber": 2,
+      "text": "Section 10. Liability. Tidalwave's liability shall be unlimited for environmental claims.\n\nAGREED:\n\nSable Holdings\n\nSignature: __________"
+    }
+  ],
+  "expected": {
+    "categories": ["change_of_control", "uncapped_liability", "missing_signature"],
+    "ambiguous": false,
+    "evidence": [
+      {
+        "category": "change_of_control",
+        "quote": "A change of control of either party requires the written consent of the other party before closing.",
+        "pages": [1],
+        "severity": "high"
+      },
+      {
+        "category": "uncapped_liability",
+        "quote": "Tidalwave's liability shall be unlimited for environmental claims.",
+        "pages": [2],
+        "severity": "high"
+      },
+      {
+        "category": "missing_signature",
+        "quote": "Signature: __________",
+        "pages": [2],
+        "severity": "medium"
+      }
+    ],
+    "rationale": "Consent-on-control-change on page 1, unlimited environmental liability on page 2, and a blank signature block on page 2."
+  }
+}

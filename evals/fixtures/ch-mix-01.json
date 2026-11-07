@@ -1,0 +1,28 @@
+{
+  "id": "ch-mix-01",
+  "label": "challenging",
+  "title": "Clear control trigger with vague IP liability",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "RESEARCH COLLABORATION\n\nBetween Alloy Labs and Basalt Pharma.\n\nSection 2. Change of Control. If either party undergoes a change of control, the collaboration pauses until the other party consents in writing."
+    },
+    {
+      "pageNumber": 2,
+      "text": "Section 6. Liability. Liability for intellectual property claims shall be determined under applicable law. All other liability is capped at project funding.\n\nSigned. Signature: Ed Pond. Signature: Fay Marsh."
+    }
+  ],
+  "expected": {
+    "categories": ["change_of_control"],
+    "ambiguous": true,
+    "evidence": [
+      {
+        "category": "change_of_control",
+        "quote": "If either party undergoes a change of control, the collaboration pauses until the other party consents in writing.",
+        "pages": [1],
+        "severity": "high"
+      }
+    ],
+    "rationale": "The control-change trigger is clear, but the intellectual-property liability sentence states neither a cap nor unlimited language, so flagging uncapped_liability is defensible but uncertain. needs_legal_review for the liability question."
+  }
+}

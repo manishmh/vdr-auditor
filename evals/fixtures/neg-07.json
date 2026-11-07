@@ -1,0 +1,17 @@
+{
+  "id": "neg-07",
+  "label": "negative",
+  "title": "Change of address wording trap",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "OFFICE LEASE AMENDMENT\n\nBetween Harbor Properties and Indigo Design.\n\nSection 1. Change of Address. Tenant shall notify Landlord of any change of address within ten days.\n\nSection 2. Rent. Monthly rent remains $8,000. Liability for late fees is capped at $500.\n\nSigned. Signature: Val Cruz. Signature: Gus Webb."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "'Change of address' is benign notice language sharing words with the target phrase but no ownership meaning. Capped and signed."
+  }
+}

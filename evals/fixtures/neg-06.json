@@ -1,0 +1,17 @@
+{
+  "id": "neg-06",
+  "label": "negative",
+  "title": "Mutual NDA with express cap",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "MUTUAL NON-DISCLOSURE AGREEMENT\n\nBetween Frost Analytics and Granite Bio.\n\nSection 1. Confidentiality. Each party shall protect the other's confidential information for three years.\n\nSection 2. Liability. Liability for breach is limited to direct damages up to $100,000.\n\nSigned. Signature: Kit Young. Signature: Max Holt."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "Standard NDA with an express $100,000 cap on direct damages. No ownership-change triggers; signed."
+  }
+}

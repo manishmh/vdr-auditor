@@ -1,0 +1,24 @@
+{
+  "id": "ch-sig-01",
+  "label": "challenging",
+  "title": "Signature pages referenced but absent",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "JOINT VENTURE AGREEMENT\n\nBetween Urban Grid and Vista Power.\n\nSection 14. Execution. This agreement may be executed in counterparts. Signature pages follow as Exhibit C.\n\nLiability is capped at the joint venture contribution. No assignment without consent."
+    }
+  ],
+  "expected": {
+    "categories": ["missing_signature"],
+    "ambiguous": true,
+    "evidence": [
+      {
+        "category": "missing_signature",
+        "quote": "Signature pages follow as Exhibit C.",
+        "pages": [1],
+        "severity": "medium"
+      }
+    ],
+    "rationale": "Execution cannot be verified from this file alone: signature pages are referenced but Exhibit C is absent, and counterparts may exist elsewhere. The correct handling is needs_legal_review, not a definitive missing/invalid verdict."
+  }
+}

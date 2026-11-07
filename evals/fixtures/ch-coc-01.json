@@ -1,0 +1,24 @@
+{
+  "id": "ch-coc-01",
+  "label": "challenging",
+  "title": "Vague ownership disclosure without consequence",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "ADVISORY AGREEMENT\n\nBetween Willow Creek Advisors and Xeno Bank.\n\nSection 3. Ownership. The parties acknowledge that a material change in the ownership structure of either party should be disclosed promptly in writing.\n\nLiability is capped at advisory fees. Signed. Signature: Ada Gold. Signature: Bo Finn."
+    }
+  ],
+  "expected": {
+    "categories": ["change_of_control"],
+    "ambiguous": true,
+    "evidence": [
+      {
+        "category": "change_of_control",
+        "quote": "The parties acknowledge that a material change in the ownership structure of either party should be disclosed promptly in writing.",
+        "pages": [1],
+        "severity": "low"
+      }
+    ],
+    "rationale": "Disclosure-only language around an ownership change with no consent, notice-obligation, or termination consequence stated. A low-severity flag or no flag are both reasonable; needs_legal_review."
+  }
+}

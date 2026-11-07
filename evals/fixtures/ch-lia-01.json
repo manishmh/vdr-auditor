@@ -1,0 +1,24 @@
+{
+  "id": "ch-lia-01",
+  "label": "challenging",
+  "title": "Broad indemnity with narrow trigger",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "LOGISTICS AGREEMENT\n\nBetween Yellowfin Freight and Zephyr Goods.\n\nSection 8. Indemnity. Yellowfin shall indemnify Zephyr for all losses arising from Yellowfin's gross negligence or willful misconduct.\n\nLiability otherwise capped at freight charges. Signed. Signature: Cy Dale. Signature: Di Ross."
+    }
+  ],
+  "expected": {
+    "categories": ["uncapped_liability"],
+    "ambiguous": true,
+    "evidence": [
+      {
+        "category": "uncapped_liability",
+        "quote": "Yellowfin shall indemnify Zephyr for all losses arising from Yellowfin's gross negligence or willful misconduct.",
+        "pages": [1],
+        "severity": "medium"
+      }
+    ],
+    "rationale": "'All losses' is broad in scope but triggered only by gross negligence or willful misconduct, and other liability is capped. Flagging at medium or not flagging are both reasonable; needs_legal_review."
+  }
+}

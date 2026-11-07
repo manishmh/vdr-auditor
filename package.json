@@ -1,26 +1,50 @@
 {
-  "name": "scaffold-tmp",
+  "name": "vdr-auditor",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "next dev",
+    "dev:api": "tsx backend/src/server.ts",
     "build": "next build",
+    "build:api": "esbuild backend/src/server.ts --bundle --platform=node --format=esm --packages=external --outfile=backend/dist/server.mjs --log-level=warning",
     "start": "next start",
-    "lint": "eslint"
+    "start:api": "node backend/dist/server.mjs",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "config:validate": "tsx scripts/check-config.ts",
+    "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cors": "^2.8.6",
+    "express": "^4.22.3",
+    "lucide-react": "^1.66.0",
+    "mongodb": "^7.8.0",
+    "multer": "^2.5.0",
     "next": "16.4.3",
+    "pdfjs-dist": "^6.4.299",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "tailwind-merge": "^3.7.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
-    "@types/node": "^20",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^22.20.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "esbuild": "^0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.4.3",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "tsx": "^4.23.15",
+    "typescript": "^5",
+    "vitest": "^5.0.5"
   }
 }
