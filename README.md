@@ -194,60 +194,104 @@ Frontend (`app/`, `components/`), backend (`backend/`), and shared code
 (`lib/`) are explicitly separated — enforced by ESLint import rules and
 `tests/architecture.test.ts`. `lib/` keeps its name deliberately: renaming
 it to `shared/` would churn every import for no gain, and moving `app/` out
-of the root would break the two-Vercel-project shared-root deployment (see
-below). The boundary that matters — no backend or server-only code in the
-browser bundle, no UI code in the backend — is enforced by tooling, not just
-folders.
+of the root would break the single-project Vercel deploy (Next.js serves
+the UI from the repository root; see below). The boundary that matters —
+no backend or server-only code in the browser bundle, no UI code in the
+backend — is enforced by tooling, not just folders.
 
 Local API proxy: the browser calls same-origin `/api/*`; in development
 `next.config.ts` rewrites those to `http://localhost:3001/api/*` (the
-backend). In production the frontend calls `NEXT_PUBLIC_API_BASE_URL`
-directly and the rewrite is inert. `api/index.ts` stays compatible with
-the `api` Vercel project: Vercel bundles it as a serverless function and
-follows its relative import into `backend/`.
+backend). That rewrite is dev-only (gated on non-production builds). In
+the single-project production deploy the browser stays on same-origin
+`/api/*` and `vercel.json` routes those to the `api/index.ts` serverless
+function, which re-exports the Express app from `backend/` — no separate
+backend URL or project required. Setting `NEXT_PUBLIC_API_BASE_URL` opts
+a frontend into a split deployment instead.
 
-## Deployment (Vercel + MongoDB Atlas)
+## Deployment (one Vercel project + MongoDB Atlas)
 
-Two Vercel projects share this repository (same root directory). Neither has
-been deployed from here — these steps are written from the implemented code,
-not from a verified deploy.
+One Vercel project serves this repository: the Next.js UI from `/` and the
+Express API from same-origin `/api/*` (via `vercel.json` → `api/index.ts`).
+Not yet deployed from here — these steps are written from the implemented
+code, not from a verified deploy.
 
-**1. MongoDB Atlas.** Create a cluster, a database user, and allowlist the
-deployment. Note the `mongodb+srv://` URI and verify storage encryption at
-rest in the Atlas console.
+**1. MongoDB Atlas.** Create a cluster and a database user with the
+least privilege the app needs (read/write on the app database only — no
+admin roles), and allowlist Vercel's egress (Atlas Network Access; see
+Atlas docs for the current IP-range/VPC options). Note the
+`mongodb+srv://` URI and verify storage encryption at rest in the Atlas
+console.
 
-**2. `api` project.** Framework: Other. No build command needed (Vercel
-bundles `api/index.ts`). Environment: `NODE_ENV=production`,
+**2. Import the repo.** In Vercel: Add New → Project → import this repo.
+Root Directory: repository root. Framework Preset: Next.js. Build
+Command and Output Directory: framework defaults (`npm run build`).
+`vercel.json` ships the pdf.js font assets with the API function
+(without them, extraction fails closed by design) and routes `/api/*`
+to it; no extra rewrites or config needed.
+
+**3. Environment variables.** Project → Settings → Environment Variables,
+scoped to **Production**, using `.env.prod` (repo root, placeholder-only
+checklist) for the exact names: `NODE_ENV=production`,
 `STORAGE_BACKEND=mongodb`, `MONGODB_URI`, `MONGODB_DB`,
-`PILOT_ACCESS_TOKEN` (`openssl rand -hex 32`), `FRONTEND_ORIGIN` (the web
-URL below), `INFERENCE_PROVIDER=baseten`, `BASETEN_API_KEY`,
-`BASETEN_MODEL_ID`, `BASETEN_STRUCTURED_OUTPUTS=false`,
-`MAX_UPLOAD_BYTES=4194304`, `MAX_PDF_PAGES`. `vercel.json` ships the
-pdf.js font assets with the function (without them, extraction fails
-closed by design).
+`PILOT_ACCESS_TOKEN` (generate with `openssl rand -hex 32`),
+`FRONTEND_ORIGIN` (this project's own public `https://…` URL),
+`INFERENCE_PROVIDER=baseten`, `BASETEN_API_KEY`, `BASETEN_MODEL_ID`,
+`BASETEN_STRUCTURED_OUTPUTS=false` (unless the model supports
+`json_schema`), `BASETEN_BASE_URL`/`BASETEN_TIMEOUT_MS`/
+`BASETEN_MAX_RETRIES` as needed, `MAX_UPLOAD_BYTES=4194304`,
+`MAX_PDF_PAGES`, `NEXT_PUBLIC_MAX_UPLOAD_MB=4`,
+`NEXT_PUBLIC_MAX_PDF_PAGES`. Leave `NEXT_PUBLIC_API_BASE_URL` **unset**
+(same-origin API). Never put secrets in `NEXT_PUBLIC_*` names. Redeploy
+after saving so the values take effect.
 
-**3. `web` project.** Framework: Next.js (`npm run build`).
-Environment: `NEXT_PUBLIC_API_BASE_URL` (the api URL above) only.
+**4. Public URL + auth.** Note the project's public `https://…` URL and
+use it as `FRONTEND_ORIGIN`. Every API route except the public
+`/api/health` check requires the shared `PILOT_ACCESS_TOKEN` Bearer token;
+the browser prompts for it (stored in
+`sessionStorage` for that tab only). There is no per-user auth: treat the
+deployment as a controlled pilot (see `docs/security.md`).
 
-**Limits (read before piloting).** Vercel request bodies cap near 4.5 MB —
-keep `MAX_UPLOAD_BYTES` at ~4 MB there; multi-section inference can exceed
-function duration caps, so pilot to small documents (see
-`docs/security.md` T19 for the worker alternative). Add platform rate
-limits on the upload/seed endpoints.
+**Env files (do not confuse them).** `.env` holds local dev values
+(gitignored, never commit). `.env.example` documents local defaults
+(committed). `.env.prod` is a placeholder-only production name checklist
+(gitignored — it must never hold values). Real production values live
+**only** in the Vercel dashboard, never in the repo.
 
-**Smoke checklist (production URLs, synthetic PDF only):**
+**Known serverless limits (read before piloting).** Vercel request bodies
+cap near 4.5 MB — hence `MAX_UPLOAD_BYTES=4194304`; the 20 MB local
+default would fail at the platform outside the API error contract. The
+serverless filesystem is ephemeral — `STORAGE_BACKEND` must be `mongodb`
+in production or uploads vanish between invocations. Upload analysis is
+synchronous (one Baseten call per ~6000-char section, sequential, 60 s
+timeout with retries each), so multi-section documents can exceed the
+function duration cap (60 s on Hobby; a mid-run kill leaves the document
+stuck in `queued`/`processing` with re-upload as the only retry — see
+`docs/security.md` T19 for the background-worker alternative). Pilot to
+small documents; the smallest adjustment when duration bites is raising
+`maxDuration` for `api/index.ts` (paid plans) and then a worker/queue.
+Add platform rate limits on the upload/seed endpoints (the app has none;
+each upload triggers paid inference calls behind one shared token).
+
+**Post-deploy test checklist (production URL, synthetic PDF only —
+never a real deal document):**
 
 ```bash
-API=https://your-api.vercel.app
+APP=https://your-project.vercel.app
 TOKEN=…   # PILOT_ACCESS_TOKEN, never commit it
-curl -s -o /dev/null -w "unauth list: %{http_code}\n" $API/api/documents   # 401
+curl -s "$APP/api/health"                       # {"ok":true} — routing works
+curl -s -o /dev/null -w "unauth list: %{http_code}\n" $APP/api/documents   # 401
+curl -s "$APP/" | head -c 200                   # UI HTML, not an API error
 node scripts/make-synthetic-pdf.mjs /tmp/synthetic-test.pdf
 ID=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   -F "file=@/tmp/synthetic-test.pdf;type=application/pdf" \
-  $API/api/documents | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log(JSON.parse(s).document.id))")
-curl -s -o /dev/null -w "detail: %{http_code}\n" -H "Authorization: Bearer $TOKEN" $API/api/documents/$ID
-curl -s -o /dev/null -w "download: %{http_code}\n" -H "Authorization: Bearer $TOKEN" $API/api/documents/$ID/file
-curl -s -o /dev/null -w "delete: %{http_code}\n" -X DELETE -H "Authorization: Bearer $TOKEN" $API/api/documents/$ID
+  $APP/api/documents | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log(JSON.parse(s).document.id))")
+curl -s -o /dev/null -w "detail: %{http_code}\n" -H "Authorization: Bearer $TOKEN" $APP/api/documents/$ID
+FID=$(curl -s -H "Authorization: Bearer $TOKEN" $APP/api/documents/$ID | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log((JSON.parse(s).findings[0]||{}).id))")
+curl -s -o /dev/null -w "review: %{http_code}\n" -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"status":"confirmed"}' $APP/api/documents/$ID/findings/$FID
+curl -s -o /dev/null -w "download: %{http_code}\n" -H "Authorization: Bearer $TOKEN" $APP/api/documents/$ID/file
+curl -s -o /dev/null -w "delete: %{http_code}\n" -X DELETE -H "Authorization: Bearer $TOKEN" $APP/api/documents/$ID
+curl -s -o /dev/null -w "seed blocked: %{http_code}\n" -X POST -H "Authorization: Bearer $TOKEN" $APP/api/demo/seed  # 403
 ```
 
 ## Security and limitations (read before any live deal)

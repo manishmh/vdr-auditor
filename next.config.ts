@@ -13,9 +13,15 @@ const nextConfig: NextConfig = {
   // production origin control stays in the Express CORS allowlist.
   allowedDevOrigins: ["127.0.0.1", "172.20.10.4"],
   async rewrites() {
-    // Local development: proxy same-origin /api/* to the Express backend
-    // (npm run dev:api, default :3001) when NEXT_PUBLIC_API_BASE_URL is unset.
-    // Deployments set the backend URL explicitly, so this never fires there.
+    // Local development only: proxy same-origin /api/* to the Express
+    // backend (npm run dev:api, default :3001) when NEXT_PUBLIC_API_BASE_URL
+    // is unset. Production must never bake in this localhost target: the
+    // single-project Vercel deploy leaves NEXT_PUBLIC_API_BASE_URL unset so
+    // the browser calls same-origin /api/*, which vercel.json routes to the
+    // api/index.ts serverless function. The gate below keeps the dev proxy
+    // out of production builds; an explicit NEXT_PUBLIC_API_BASE_URL still
+    // opts a frontend into a separate backend deployment.
+    if (process.env.NODE_ENV === "production") return [];
     if (process.env.NEXT_PUBLIC_API_BASE_URL) return [];
     return [{ source: "/api/:path*", destination: "http://localhost:3001/api/:path*" }];
   },
