@@ -46,3 +46,6 @@ next-env.d.ts
 backend/dist/
 # evaluation run reports (may reference live model runs)
 evals/reports/
+
+# Local user documents — never commit
+/data/
