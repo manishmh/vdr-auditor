@@ -302,6 +302,27 @@ curl -s -o /dev/null -w "delete: %{http_code}\n" -X DELETE -H "Authorization: Be
 curl -s -o /dev/null -w "seed blocked: %{http_code}\n" -X POST -H "Authorization: Bearer $TOKEN" $APP/api/demo/seed  # 403
 ```
 
+**Troubleshooting production `/api/*` failures.** Vercel → Project →
+Logs for function `api/index.js` names the cause (`[api]`/`[mongo]`
+lines; secrets are never logged):
+
+- `GET /api/documents` → 401 with no token is the gate working: enter
+  the `PILOT_ACCESS_TOKEN` value in the browser prompt. Vercel hides a
+  saved value, so if it is lost, rotate it: generate a new one
+  (`openssl rand -hex 32`), overwrite `PILOT_ACCESS_TOKEN` in
+  Environment Variables, redeploy, then enter the new token in the UI.
+- `tlsv1 alert internal error`, auth failures, or server-selection
+  timeouts are a bad Atlas connection, not an app bug: `MONGODB_URI`
+  must be the `mongodb+srv://` URI (or `mongodb://` with `?tls=true`;
+  the server logs a warning when a remote `mongodb://` URI lacks TLS),
+  with URL-encoded password, a user holding `readWrite` on that
+  database only, and Atlas Network Access allowing Vercel egress.
+- `Topology is closed` on a warm instance is fixed in code (connects
+  single-flight; failed clients are never cached; each request
+  revalidates): redeploy to pick it up. If it persists after a
+  redeploy, the underlying Atlas connection is still failing — fix the
+  URI/access first, instances reconnect on the next request.
+
 ## Security and limitations (read before any live deal)
 
 - **Controlled pilot only — not suitable for general production or live deals.**
