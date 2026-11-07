@@ -173,8 +173,9 @@ app/            Next.js App Router pages (UI only; no API routes)
 components/     UI components (ui/ holds shadcn-style primitives)
 backend/src/    Backend: Express API (app, routes, controllers, middleware,
                 context, repositories incl. MongoDB) + server startup
-api/index.ts    Thin Vercel adapter re-exporting the Express app (must stay
-                at api/ by Vercel convention; all logic lives in backend/)
+api/index.js     Generated Vercel function: single-file CommonJS bundle of
+                backend/src/vercel.ts (built by npm run build; gitignored —
+                never put .ts under api/, Vercel would transpile it per-file)
 lib/
   config.ts     Env validation (Zod)
   risks.ts      Configurable risk categories
@@ -203,15 +204,17 @@ Local API proxy: the browser calls same-origin `/api/*`; in development
 `next.config.ts` rewrites those to `http://localhost:3001/api/*` (the
 backend). That rewrite is dev-only (gated on non-production builds). In
 the single-project production deploy the browser stays on same-origin
-`/api/*` and `vercel.json` routes those to the `api/index.ts` serverless
-function, which re-exports the Express app from `backend/` — no separate
-backend URL or project required. Setting `NEXT_PUBLIC_API_BASE_URL` opts
-a frontend into a split deployment instead.
+`/api/*` and `vercel.json` routes those to the generated `api/index.js`
+serverless function (a CommonJS bundle of `backend/src/vercel.ts`, which
+re-exports the Express app from `backend/`) — no separate backend URL or
+project required. Setting `NEXT_PUBLIC_API_BASE_URL` opts a frontend
+into a split deployment instead.
 
 ## Deployment (one Vercel project + MongoDB Atlas)
 
 One Vercel project serves this repository: the Next.js UI from `/` and the
-Express API from same-origin `/api/*` (via `vercel.json` → `api/index.ts`).
+Express API from same-origin `/api/*` (via `vercel.json` → generated
+`api/index.js`, bundled from `backend/src/vercel.ts` during the build).
 Not yet deployed from here — these steps are written from the implemented
 code, not from a verified deploy.
 
@@ -224,7 +227,9 @@ console.
 
 **2. Import the repo.** In Vercel: Add New → Project → import this repo.
 Root Directory: repository root. Framework Preset: Next.js. Build
-Command and Output Directory: framework defaults (`npm run build`).
+Command is pinned by `vercel.json` to `npm run build` — do not override
+it in the dashboard, or the API bundle step is skipped and `/api/*`
+breaks. Output Directory: framework default.
 `vercel.json` ships the pdf.js font assets with the API function
 (without them, extraction fails closed by design) and routes `/api/*`
 to it; no extra rewrites or config needed.
@@ -268,7 +273,7 @@ function duration cap (60 s on Hobby; a mid-run kill leaves the document
 stuck in `queued`/`processing` with re-upload as the only retry — see
 `docs/security.md` T19 for the background-worker alternative). Pilot to
 small documents; the smallest adjustment when duration bites is raising
-`maxDuration` for `api/index.ts` (paid plans) and then a worker/queue.
+`maxDuration` for `api/index.js` (paid plans) and then a worker/queue.
 Add platform rate limits on the upload/seed endpoints (the app has none;
 each upload triggers paid inference calls behind one shared token).
 

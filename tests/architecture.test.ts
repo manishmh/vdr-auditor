@@ -14,7 +14,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function sourceFiles(dir: string): string[] {
   const out: string[] = [];
-  for (const entry of readdirSync(join(ROOT, dir))) {
+  let entries: string[];
+  try {
+    entries = readdirSync(join(ROOT, dir));
+  } catch {
+    return out; // optional dir (e.g. api/ before the first build generates it)
+  }
+  for (const entry of entries) {
     const full = join(ROOT, dir, entry);
     if (statSync(full).isDirectory()) out.push(...sourceFiles(join(dir, entry)));
     else if (/\.(ts|tsx)$/.test(entry)) out.push(full);
@@ -77,10 +83,20 @@ describe("frontend/backend separation", () => {
     expect(violations).toEqual([]);
   });
 
-  it("keeps api/index.ts a thin adapter over backend/", () => {
-    const text = readFileSync(join(ROOT, "api/index.ts"), "utf8");
-    expect(text).toContain("../backend/src/app");
+  it("keeps backend/src/vercel.ts a thin adapter over backend/", () => {
+    const text = readFileSync(join(ROOT, "backend/src/vercel.ts"), "utf8");
+    expect(text).toContain("./app");
     expect(text.split("\n").length).toBeLessThan(30);
+  });
+
+  it("keeps TypeScript out of api/ (each .ts there becomes a separately transpiled Vercel function)", () => {
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(join(ROOT, "api"));
+    } catch {
+      entries = [];
+    }
+    expect(entries.filter((entry) => entry.endsWith(".ts"))).toEqual([]);
   });
 
   it("has no leftover server/ sources", () => {

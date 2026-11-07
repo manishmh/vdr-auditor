@@ -40,7 +40,7 @@ describe("single-project Vercel routing", () => {
     expect(vercel.rewrites![0]).toEqual({ source: "/api/:path*", destination: "/api/index" });
     // pdf.js font assets ship with the function; without them extraction
     // fails closed by design.
-    expect(vercel.functions?.["api/index.ts"]?.includeFiles).toContain("pdfjs-dist");
+    expect(vercel.functions?.["api/index.js"]?.includeFiles).toContain("pdfjs-dist");
   });
 
   it("never bakes the localhost dev proxy into production builds", async () => {
