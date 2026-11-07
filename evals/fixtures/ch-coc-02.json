@@ -1,0 +1,24 @@
+{
+  "id": "ch-coc-02",
+  "label": "challenging",
+  "title": "Merger-linked assignment consent",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "MAINTENANCE AGREEMENT\n\nBetween Elm Services and Forest Hotels.\n\nSection 4. Assignment. Neither party may assign this agreement in connection with a merger without the other party's consent, not to be unreasonably withheld.\n\nLiability capped at annual fees. Signed. Signature: Hal Ives. Signature: Ida James."
+    }
+  ],
+  "expected": {
+    "categories": ["change_of_control"],
+    "ambiguous": true,
+    "evidence": [
+      {
+        "category": "change_of_control",
+        "quote": "Neither party may assign this agreement in connection with a merger without the other party's consent, not to be unreasonably withheld.",
+        "pages": [1],
+        "severity": "low"
+      }
+    ],
+    "rationale": "A merger-linked consent reads change-of-control-adjacent but is framed as assignment with a reasonableness qualifier. A low-severity flag or no flag are both reasonable; needs_legal_review."
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "ch-cap-01",
+  "label": "challenging",
+  "title": "Zero-dollar cap on a free pilot",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "FREE PILOT AGREEMENT\n\nBetween Sunfield AI and Terra Grocers.\n\nSection 2. Pilot. Sunfield provides a free ninety-day pilot at no charge.\n\nSection 5. Liability. Liability is capped at the fees paid for the pilot.\n\nSigned. Signature: Ann Lowe. Signature: Bob Mann."
+    }
+  ],
+  "expected": {
+    "categories": ["uncapped_liability"],
+    "ambiguous": true,
+    "evidence": [
+      {
+        "category": "uncapped_liability",
+        "quote": "Liability is capped at the fees paid for the pilot.",
+        "pages": [1],
+        "severity": "medium"
+      }
+    ],
+    "rationale": "Fees paid are $0, so the stated cap may offer no real limit — but a cap is literally stated. Flagging for legal review or not flagging are both reasonable; needs_legal_review is the right handling, not a definitive call."
+  }
+}

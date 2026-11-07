@@ -1,0 +1,17 @@
+{
+  "id": "neg-03",
+  "label": "negative",
+  "title": "Explicit liability cap",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "MAINTENANCE CONTRACT\n\nBetween Zephyr Air and Amberfall Hotels.\n\nSection 3. Liability Cap. Zephyr's total liability under this contract is limited to the annual service fee.\n\nSection 4. Term. One year, renewable by mutual agreement.\n\nSigned. Signature: Pat Lee, Zephyr. Signature: Jo King, Amberfall."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "Liability is expressly limited to the annual fee. No change-of-control language and both parties signed."
+  }
+}

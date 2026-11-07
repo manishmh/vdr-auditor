@@ -1,0 +1,17 @@
+{
+  "id": "neg-09",
+  "label": "negative",
+  "title": "In-no-event cap phrasing",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "CATERING AGREEMENT\n\nBetween Lemon Tree Catering and Marble Events.\n\nSection 4. Liability. In no event shall either party's liability exceed the amount paid for the event.\n\nSigned. Signature: Ana Ruiz. Signature: Ben Snow."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "Classic express cap phrasing ('in no event shall ... exceed'). No change-of-control language; signed."
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "neg-05",
+  "label": "negative",
+  "title": "Electronically signed statement of work",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "CONSULTING STATEMENT OF WORK\n\nBetween Drift Labs and Ember & Co.\n\nSection 1. Work. Drift Labs will deliver the website redesign by June 30.\n\nSection 2. Fees and Cap. Fees total $40,000. Neither party's liability exceeds the fees paid.\n\n/s/ Noel White, Drift Labs, April 2.\n\n/s/ Ember & Co., April 3."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "Electronic signature markers for both parties, liability capped at fees paid, no change-of-control language."
+  }
+}

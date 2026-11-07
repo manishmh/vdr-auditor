@@ -1,0 +1,17 @@
+{
+  "id": "ch-neg-01",
+  "label": "challenging",
+  "title": "Explicit negation of change of control",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "STATEMENT OF WORK\n\nBetween Pearl Software and Quartz Retail.\n\nSection 1. Scope. Pearl will configure the checkout module. No change of control provision applies to this statement of work.\n\nSection 2. Liability. Liability is capped at the statement-of-work value.\n\nSigned. Signature: Hal Dean. Signature: Ivy Shaw."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "The target phrase appears only inside an explicit negation, liability is capped, and both parties signed. Keyword matchers will false-positive here; that error is fairly scored."
+  }
+}

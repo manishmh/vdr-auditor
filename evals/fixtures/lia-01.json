@@ -1,0 +1,24 @@
+{
+  "id": "lia-01",
+  "label": "positive",
+  "title": "Unlimited liability for data breach",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "DATA PROCESSING ADDENDUM\n\nBetween Elmwood Systems and Fabrikam Partners.\n\nSection 4. Liability. Fabrikam's liability shall be unlimited for any breach of its data protection obligations under this addendum.\n\nSigned. Signature: Jordan Ellis, Fabrikam. Signature: Taylor Brooks, Elmwood."
+    }
+  ],
+  "expected": {
+    "categories": ["uncapped_liability"],
+    "ambiguous": false,
+    "evidence": [
+      {
+        "category": "uncapped_liability",
+        "quote": "Fabrikam's liability shall be unlimited for any breach of its data protection obligations under this addendum.",
+        "pages": [1],
+        "severity": "high"
+      }
+    ],
+    "rationale": "Liability is expressly unlimited for data-protection breach. Signed, no change-of-control language, so only uncapped_liability applies."
+  }
+}

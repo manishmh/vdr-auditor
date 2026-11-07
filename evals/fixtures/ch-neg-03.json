@@ -1,0 +1,24 @@
+{
+  "id": "ch-neg-03",
+  "label": "challenging",
+  "title": "Counterparts with one blank signature",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "FRANCHISE AGREEMENT\n\nBetween Coral Foods and Delta Partners.\n\nSection 12. Counterparts. This agreement may be executed in counterparts, each of which is deemed an original.\n\nCoral Foods\n\nSignature: Grey Wolf\n\nDelta Partners\n\nSignature: __________"
+    }
+  ],
+  "expected": {
+    "categories": ["missing_signature"],
+    "ambiguous": true,
+    "evidence": [
+      {
+        "category": "missing_signature",
+        "quote": "Signature: __________",
+        "pages": [1],
+        "severity": "medium"
+      }
+    ],
+    "rationale": "One party signed and the other block is blank, but counterparts may complete execution elsewhere. Flagging for legal review is right; a definitive missing/invalid verdict is not."
+  }
+}

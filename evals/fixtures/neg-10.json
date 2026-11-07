@@ -1,0 +1,17 @@
+{
+  "id": "neg-10",
+  "label": "negative",
+  "title": "Benign cost-sharing memorandum",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "MEMORANDUM OF UNDERSTANDING\n\nBetween Northfield Arts and Opal Museum on a joint exhibition.\n\nThe parties will share exhibition costs equally and carry their own insurance. Liability of each party is limited to its own costs.\n\nSigned. Signature: Zoe Lane. Signature: Cal Reed."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "Benign cost-sharing terms with liability limited to each party's own costs. No ownership triggers; signed."
+  }
+}

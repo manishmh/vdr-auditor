@@ -1,0 +1,28 @@
+{
+  "id": "sig-01",
+  "label": "positive",
+  "title": "Blank signature block",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "EQUIPMENT LEASE\n\nBetween Kestrel Leasing and Larkspur Farms.\n\nSection 1. Equipment. Kestrel leases the harvester described in Schedule A to Larkspur for twelve months."
+    },
+    {
+      "pageNumber": 2,
+      "text": "IN WITNESS WHEREOF, the parties have executed this lease.\n\nKestrel Leasing\n\nSignature: __________\n\nName:\n\nTitle:\n\nDate:"
+    }
+  ],
+  "expected": {
+    "categories": ["missing_signature"],
+    "ambiguous": false,
+    "evidence": [
+      {
+        "category": "missing_signature",
+        "quote": "Signature: __________",
+        "pages": [2],
+        "severity": "medium"
+      }
+    ],
+    "rationale": "The execution block on page 2 is present but blank. Counterparts may complete execution elsewhere, so this is a completeness signal, not proof the lease is invalid."
+  }
+}

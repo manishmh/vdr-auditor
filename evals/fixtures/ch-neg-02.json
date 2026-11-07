@@ -1,0 +1,17 @@
+{
+  "id": "ch-neg-02",
+  "label": "challenging",
+  "title": "Unlimited liability describing a superseded agreement",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "SETTLEMENT AND RELEASE\n\nBetween Riverbank Corp and Stonefield LLC.\n\nRecitals. WHEREAS the Prior Agreement imposed unlimited liability on Riverbank for legacy claims;\n\nSection 1. Release. The parties release all legacy claims. Section 2. Cap. Liability under this settlement is capped at $250,000.\n\nSigned. Signature: Omar Neil. Signature: Pia Wells."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "'Unlimited liability' describes the superseded prior agreement in a recital; the operative settlement terms cap liability at $250,000. Keyword matchers will false-positive here; that error is fairly scored."
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "lia-03",
+  "label": "positive",
+  "title": "Liability cap with unlimited carve-out",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "SOFTWARE LICENSE\n\nBetween Ironpeak Software and Juniper Goods.\n\nSection 11. Limitation of Liability. Neither party's liability shall exceed the fees paid in the preceding year. Liability shall be unlimited for breach of Section 3 (Intellectual Property).\n\nExecuted. Signature: Pat Quinn. Signature: Lee Morgan."
+    }
+  ],
+  "expected": {
+    "categories": ["uncapped_liability"],
+    "ambiguous": false,
+    "evidence": [
+      {
+        "category": "uncapped_liability",
+        "quote": "Liability shall be unlimited for breach of Section 3 (Intellectual Property).",
+        "pages": [1],
+        "severity": "high"
+      }
+    ],
+    "rationale": "A general cap exists, but the intellectual-property carve-out is expressly unlimited — the exception is the risk. Signed, no change-of-control language."
+  }
+}

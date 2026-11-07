@@ -1,36 +1,275 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# M&A Due Diligence Data Room Auditor
 
-## Getting Started
+AI-assisted first-pass review of contract PDFs for M&A due diligence teams.
+Upload a contract, get evidence-backed candidate findings across configurable
+risk categories, and confirm or dismiss each one with its source text in view.
 
-First, run the development server:
+> **Not legal advice.** This tool surfaces candidate provisions for human review.
+> Every finding must be verified by a qualified reviewer. Findings labeled
+> **Demo** are synthetic and never came from a real legal review.
+
+Phase 5 status: Next.js frontend, Express REST API, MongoDB persistence,
+PDF extraction, evidence verification, review UI, live Baseten inference,
+and pilot access controls (see [`docs/plan.md`](docs/plan.md),
+[`docs/security.md`](docs/security.md), and
+[`docs/migration-plan.md`](docs/migration-plan.md)).
+Controlled-pilot candidate only: a shared pilot token gates the API, but there
+is no per-user auth, no verified encryption at rest, and no retention policy —
+unsuitable for confidential live deals outside a controlled pilot (see below).
+
+## Quickstart
+
+Requirements: Node.js 22+. MongoDB only if you want the `mongodb` storage
+backend (local docker is fine; Atlas in production).
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env   # mock + local defaults work with no extra setup
+npm run dev            # backend :3001 + frontend :3000 together (use this)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`npm run dev` launches both services with prefixed logs and shuts both
+down on Ctrl+C; if the backend crashes it prints a loud banner instead of
+leaving the frontend proxy without a server. To run each independently:
+`npm run dev:api` (Express on http://localhost:3001) and `npm run dev:web`
+(Next.js on http://localhost:3000). Never run the frontend alone — its
+`/api/*` rewrite targets the backend, and without it every API call fails
+with `ECONNREFUSED 127.0.0.1:3001`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Local network access: `npm run dev` also serves the machine's LAN address
+(shown as `Network:` in its output). That IP must be listed in
+`allowedDevOrigins` in `next.config.ts` — otherwise the page loads as dead
+static HTML with no hydration, HMR, or uploads. If the LAN IP changes (new
+network/DHCP lease), update the entry to the current `hostname -I` address
+and restart `npm run dev`. This setting is development-only; production
+origin control stays in the Express CORS allowlist.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Upload any text-based PDF contract to analyze it. (The dashboard's former
+"Load demo document" button was removed; the backend seed endpoint remains
+for automated tests and local development only, and stays disabled in
+production.)
 
-## Learn More
+## User workflow
 
-To learn more about Next.js, take a look at the following resources:
+1. Unlock the app with the pilot token (production) — the prompt appears
+   automatically when the API requires it.
+2. Review the document list; each row shows status, pages, and finding count.
+3. Upload a contract PDF (PDF only, size/page caps shown on the dropzone).
+   Processing is synchronous: the dropzone shows progress until analysis
+   finishes, then links to the review page.
+4. Open a document to review candidate findings: severity, category,
+   explanation, exact evidence quote with page reference, recommended
+   action, confidence, and model.
+5. Set a review status (Open / Confirmed / Dismissed / Needs legal review)
+   and save reviewer notes per finding.
+6. Download the original PDF, or delete the document (with confirmation) —
+   deletion permanently erases the upload, text, findings, and review
+   history.
+7. Read statuses honestly: `failed` means not analyzed (re-upload to
+   retry), `needs_ocr` means a scanned PDF the build cannot read, `partial`
+   means some sections failed, and zero findings means nothing was flagged —
+   never a clean bill of health. A document stuck in `queued`/`processing`
+   explains itself on its review page.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Known limitations: no per-user accounts (shared pilot token), no encryption
+at rest to claim, no rate limiting, no retention/legal-hold controls, no
+OCR, no upload idempotency (retried uploads create duplicates), and the
+document list is unpaginated. See `docs/security.md`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Scripts
 
-## Deploy on Vercel
+| Command             | Purpose                                      |
+| ------------------- | -------------------------------------------- |
+| `npm run dev`       | Start backend + frontend together (dev)      |
+| `npm run dev:web`   | Start the Next.js frontend alone (dev)       |
+| `npm run dev:api`   | Start the Express API alone (dev, :3001)     |
+| `npm run build`     | Frontend production build                    |
+| `npm run build:api` | Bundle the Express API to `backend/dist/`    |
+| `npm start`         | Serve a frontend production build            |
+| `npm run start:api` | Serve the bundled API                        |
+| `npm run lint`      | ESLint                                       |
+| `npm run typecheck` | TypeScript strict check (`tsc --noEmit`)     |
+| `npm run test`      | Vitest suite (Mongo tests need `TEST_MONGODB_URI`) |
+| `npm run config:validate` | Validate environment configuration    |
+| `npm run eval -- --mode mock` | Offline eval over 30 synthetic fixtures |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Live-model eval: `npm run eval -- --mode live --confirm-live` (uses `BASETEN_*`
+env; reports land in gitignored `evals/reports/`). Methodology in
+[`evals/README.md`](evals/README.md). Synthetic scores do not predict real-world
+legal accuracy.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Environment
+
+Every variable except the three `NEXT_PUBLIC_*` entries belongs to the
+backend (or shared tooling); nothing secret may use a `NEXT_PUBLIC_` name.
+
+| Variable              | Default                          | Purpose                                  |
+| --------------------- | -------------------------------- | ---------------------------------------- |
+| `INFERENCE_PROVIDER`  | `mock`                           | `mock` (deterministic) or `baseten` (live LLM) |
+| `BASETEN_API_KEY`     | —                                | Server-side Baseten key (required for `baseten`) |
+| `BASETEN_MODEL_ID`    | —                                | Baseten model slug, never hardcoded      |
+| `BASETEN_BASE_URL`    | `https://inference.baseten.co/v1` | Model APIs endpoint                     |
+| `BASETEN_TIMEOUT_MS`  | `60000`                          | Per-request timeout                      |
+| `BASETEN_MAX_RETRIES` | `2`                              | Bounded retries on 429/5xx/network only  |
+| `STORAGE_BACKEND`     | `local`                          | `local` (JSON files) or `mongodb`        |
+| `MONGODB_URI`         | —                                | Mongo connection string (required for `mongodb`) |
+| `MONGODB_DB`          | `vdr_auditor`                    | Mongo database name                      |
+| `TEST_MONGODB_URI`    | —                                | Disposable DB for repository tests       |
+| `MAX_UPLOAD_BYTES`    | `20971520` (20 MB)               | Upload size cap (≤ ~4 MB on Vercel)      |
+| `MAX_PDF_PAGES`       | `200`                            | Page cap per document                    |
+| `STORAGE_DIR`         | `.data`                          | Local storage root (gitignored)          |
+| `PILOT_ACCESS_TOKEN`  | —                                | Shared API bearer credential (≥32 chars; required in prod) |
+| `FRONTEND_ORIGIN`     | `http://localhost:3000` (dev)    | Allowed browser origin for CORS (required in prod) |
+| `PORT`                | `3001`                           | Express API port (local)                 |
+| `NEXT_PUBLIC_API_BASE_URL` | — (same-origin)             | Frontend → API base URL (public) |
+| `NEXT_PUBLIC_MAX_UPLOAD_MB` | `20`                     | Client upload-cap mirror (server re-validates) |
+| `NEXT_PUBLIC_MAX_PDF_PAGES` | `200`                    | Client page-cap mirror (label only) |
+
+## MongoDB setup
+
+```bash
+docker run -d -p 127.0.0.1:27017:27017 mongo:8   # local development
+# in .env:
+STORAGE_BACKEND=mongodb
+MONGODB_URI=mongodb://127.0.0.1:27017/vdr_auditor
+npm run dev:api
+```
+
+In production use MongoDB Atlas (`mongodb+srv://…`, TLS) with storage
+encryption verified. Each backend owns its records; switching backends does
+not migrate data. Originals are stored as BSON Binary at pilot scale —
+production should move them to encrypted object storage. Note the 16 MB
+BSON document ceiling: keep `MAX_UPLOAD_BYTES` at or below ~14 MB with the
+`mongodb` backend; larger files fail with an explicit storage error.
+
+## Baseten setup
+
+1. Create an API key in the Baseten console and pick a Model APIs slug from the
+   [supported-models table](https://docs.baseten.co/inference/model-apis/overview.md#supported-models)
+   (re-check the live catalog; slugs change).
+2. In `.env` (gitignored, never commit):
+   `INFERENCE_PROVIDER=baseten`, `BASETEN_API_KEY=…`, `BASETEN_MODEL_ID=<slug>`.
+3. Requests are one call per document section with per-request timeouts and
+   bounded retries. Auth/model errors fail fast; per-section failures mark the
+   document `partial` (or `failed` if nothing was screened) — never clean.
+   Models with structured-output support get a `json_schema` response format;
+   models without (e.g. Muse Spark Open) need `BASETEN_STRUCTURED_OUTPUTS=false`,
+   which requests JSON in the prompt instead. See [`docs/baseten.md`](docs/baseten.md).
+
+To live-test one synthetic PDF (fictional content only, no credentials on the
+command line):
+
+```bash
+node scripts/make-synthetic-pdf.mjs /tmp/synthetic-test.pdf
+INFERENCE_PROVIDER=baseten npm run dev:api   # serves http://localhost:3001
+curl -X POST -F "file=@/tmp/synthetic-test.pdf;type=application/pdf" \
+  http://localhost:3001/api/documents
+```
+
+## Project structure
+
+```
+app/            Next.js App Router pages (UI only; no API routes)
+components/     UI components (ui/ holds shadcn-style primitives)
+backend/src/    Backend: Express API (app, routes, controllers, middleware,
+                context, repositories incl. MongoDB) + server startup
+api/index.ts    Thin Vercel adapter re-exporting the Express app (must stay
+                at api/ by Vercel convention; all logic lives in backend/)
+lib/
+  config.ts     Env validation (Zod)
+  risks.ts      Configurable risk categories
+  findings/     Validated finding schemas
+  pdf/          Upload validation + text extraction (page-level)
+  text/         Clause-aware section splitting
+  evidence.ts   Quotation verification + page resolution
+  inference/    Provider interface, mock + Baseten providers, prompt templates
+  store/        Storage interface + local implementation (eval/offline)
+  pipeline.ts   validate → extract → chunk → analyze → verify → persist
+tests/          Vitest suite (HTTP API tests, Mongo repository tests, eval)
+scripts/        dev runner, eval CLI, config check, fixture generators
+docs/           Plan, security, migration, Baseten API notes
+```
+
+Frontend (`app/`, `components/`), backend (`backend/`), and shared code
+(`lib/`) are explicitly separated — enforced by ESLint import rules and
+`tests/architecture.test.ts`. `lib/` keeps its name deliberately: renaming
+it to `shared/` would churn every import for no gain, and moving `app/` out
+of the root would break the two-Vercel-project shared-root deployment (see
+below). The boundary that matters — no backend or server-only code in the
+browser bundle, no UI code in the backend — is enforced by tooling, not just
+folders.
+
+Local API proxy: the browser calls same-origin `/api/*`; in development
+`next.config.ts` rewrites those to `http://localhost:3001/api/*` (the
+backend). In production the frontend calls `NEXT_PUBLIC_API_BASE_URL`
+directly and the rewrite is inert. `api/index.ts` stays compatible with
+the `api` Vercel project: Vercel bundles it as a serverless function and
+follows its relative import into `backend/`.
+
+## Deployment (Vercel + MongoDB Atlas)
+
+Two Vercel projects share this repository (same root directory). Neither has
+been deployed from here — these steps are written from the implemented code,
+not from a verified deploy.
+
+**1. MongoDB Atlas.** Create a cluster, a database user, and allowlist the
+deployment. Note the `mongodb+srv://` URI and verify storage encryption at
+rest in the Atlas console.
+
+**2. `api` project.** Framework: Other. No build command needed (Vercel
+bundles `api/index.ts`). Environment: `NODE_ENV=production`,
+`STORAGE_BACKEND=mongodb`, `MONGODB_URI`, `MONGODB_DB`,
+`PILOT_ACCESS_TOKEN` (`openssl rand -hex 32`), `FRONTEND_ORIGIN` (the web
+URL below), `INFERENCE_PROVIDER=baseten`, `BASETEN_API_KEY`,
+`BASETEN_MODEL_ID`, `BASETEN_STRUCTURED_OUTPUTS=false`,
+`MAX_UPLOAD_BYTES=4194304`, `MAX_PDF_PAGES`. `vercel.json` ships the
+pdf.js font assets with the function (without them, extraction fails
+closed by design).
+
+**3. `web` project.** Framework: Next.js (`npm run build`).
+Environment: `NEXT_PUBLIC_API_BASE_URL` (the api URL above) only.
+
+**Limits (read before piloting).** Vercel request bodies cap near 4.5 MB —
+keep `MAX_UPLOAD_BYTES` at ~4 MB there; multi-section inference can exceed
+function duration caps, so pilot to small documents (see
+`docs/security.md` T19 for the worker alternative). Add platform rate
+limits on the upload/seed endpoints.
+
+**Smoke checklist (production URLs, synthetic PDF only):**
+
+```bash
+API=https://your-api.vercel.app
+TOKEN=…   # PILOT_ACCESS_TOKEN, never commit it
+curl -s -o /dev/null -w "unauth list: %{http_code}\n" $API/api/documents   # 401
+node scripts/make-synthetic-pdf.mjs /tmp/synthetic-test.pdf
+ID=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -F "file=@/tmp/synthetic-test.pdf;type=application/pdf" \
+  $API/api/documents | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log(JSON.parse(s).document.id))")
+curl -s -o /dev/null -w "detail: %{http_code}\n" -H "Authorization: Bearer $TOKEN" $API/api/documents/$ID
+curl -s -o /dev/null -w "download: %{http_code}\n" -H "Authorization: Bearer $TOKEN" $API/api/documents/$ID/file
+curl -s -o /dev/null -w "delete: %{http_code}\n" -X DELETE -H "Authorization: Bearer $TOKEN" $API/api/documents/$ID
+```
+
+## Security and limitations (read before any live deal)
+
+- **Controlled pilot only — not suitable for general production or live deals.**
+  Every API route requires the shared `PILOT_ACCESS_TOKEN` bearer credential in
+  production, but there is no per-user authentication or authorization, no
+  encryption at rest, no rate limiting, and no retention policy (delete is
+  immediate full erasure with no audit trail). See `docs/security.md` for the
+  threat model and pilot prerequisites. Review events are recorded in MongoDB
+  but not yet surfaced.
+- Uploads are validated server-side (extension, PDF magic bytes, size cap).
+  Local-backend files live outside `public/` under generated IDs; MongoDB
+  originals live as BSON Binary. Client filenames are metadata only.
+- Baseten credentials live exclusively in server-side env and are sent only as
+  an `Authorization` header. Logs never include API keys, contract text, or
+  finding evidence — only IDs, sizes, counts, latency, and outcomes. Note that
+  `baseten` mode sends document text to the Baseten API (zero-retention on
+  synchronous Model API requests per Baseten's docs — confirm current policy
+  before any sensitive use).
+- Text-based PDFs only. Scanned PDFs extract little or no text and are reported
+  as `needs_ocr`, never as clean.
+- Delete a document (dashboard → document → Delete, or `DELETE /api/documents/[id]`)
+  to remove its upload, extracted text, findings, and review events.
+- Do not upload confidential live-deal documents to this build.

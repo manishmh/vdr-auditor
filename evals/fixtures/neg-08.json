@@ -1,0 +1,17 @@
+{
+  "id": "neg-08",
+  "label": "negative",
+  "title": "Termination for convenience without trigger",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "CLEANING SERVICES CONTRACT\n\nBetween Jade Facilities and Kite Office Park.\n\nSection 5. Termination. Either party may terminate for convenience with sixty days notice.\n\nSection 6. Liability. Total liability shall not exceed three months of fees.\n\nSigned. Signature: Ian Cole. Signature: Eve Marsh."
+    }
+  ],
+  "expected": {
+    "categories": [],
+    "ambiguous": false,
+    "evidence": [],
+    "rationale": "Convenience termination with no ownership trigger, an express fee-based cap, and both signatures."
+  }
+}

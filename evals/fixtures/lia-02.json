@@ -1,0 +1,24 @@
+{
+  "id": "lia-02",
+  "label": "positive",
+  "title": "Broad indemnity with no stated cap",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "text": "CONSULTING AGREEMENT\n\nBetween Gable & Sons and Harborlight Studio.\n\nSection 6. Indemnification. Harborlight shall indemnify and hold harmless Gable against any and all losses, damages, and claims arising from the consulting services.\n\nNo other limitation of liability is stated in this agreement.\n\nSigned by both firms. Signature: Alex Rivera. Signature: Sam Carter."
+    }
+  ],
+  "expected": {
+    "categories": ["uncapped_liability"],
+    "ambiguous": false,
+    "evidence": [
+      {
+        "category": "uncapped_liability",
+        "quote": "Harborlight shall indemnify and hold harmless Gable against any and all losses, damages, and claims arising from the consulting services.",
+        "pages": [1],
+        "severity": "medium"
+      }
+    ],
+    "rationale": "Indemnity covers 'any and all' losses with no cap stated anywhere; medium severity because scope still needs reviewer judgment. Signed, no change-of-control language."
+  }
+}
