@@ -38,8 +38,8 @@ yarn-error.log*
 
 # vercel
 .vercel
-# Generated Vercel API bundle (npm run build:vercel-api; rebuilt on every build).
-api/index.js
+# Transient dirs for the Vercel bundle load test (removed after each run).
+.tmp-vercel-verify-*/
 
 # typescript
 *.tsbuildinfo

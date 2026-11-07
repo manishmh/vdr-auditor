@@ -14,8 +14,6 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Bundled Express API output (gitignored build artifact).
     "backend/dist/**",
-    // Generated Vercel API bundle (gitignored build artifact).
-    "api/index.js",
   ]),
   // Frontend/backend boundary: client code (app/, components/) may use only
   // the shared contracts (lib types/schemas/consts/utils). Server-only
@@ -42,6 +40,14 @@ const eslintConfig = defineConfig([
           ],
         },
       ],
+    },
+  },
+  // The committed Vercel stub is plain CommonJS by design (Vercel loads
+  // api/*.js as CJS), so require() is its only import mechanism.
+  {
+    files: ["api/**/*.js"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
     },
   },
   // Mirror boundary: backend and the Vercel adapter never import UI code.

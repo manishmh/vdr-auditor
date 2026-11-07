@@ -18,7 +18,7 @@ const nextConfig: NextConfig = {
     // is unset. Production must never bake in this localhost target: the
     // single-project Vercel deploy leaves NEXT_PUBLIC_API_BASE_URL unset so
     // the browser calls same-origin /api/*, which vercel.json routes to the
-    // generated api/index.js serverless function. The gate below keeps the dev proxy
+    // api/index.js serverless function stub. The gate below keeps the dev proxy
     // out of production builds; an explicit NEXT_PUBLIC_API_BASE_URL still
     // opts a frontend into a separate backend deployment.
     if (process.env.NODE_ENV === "production") return [];

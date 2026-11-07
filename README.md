@@ -173,9 +173,10 @@ app/            Next.js App Router pages (UI only; no API routes)
 components/     UI components (ui/ holds shadcn-style primitives)
 backend/src/    Backend: Express API (app, routes, controllers, middleware,
                 context, repositories incl. MongoDB) + server startup
-api/index.js     Generated Vercel function: single-file CommonJS bundle of
-                backend/src/vercel.ts (built by npm run build; gitignored —
-                never put .ts under api/, Vercel would transpile it per-file)
+api/index.js     Committed Vercel stub (plain CJS, deployed as-is) requiring
+                the generated backend/dist/vercel-api.cjs bundle of
+                backend/src/vercel.ts (built by npm run build; dist/ is
+                gitignored — never put .ts under api/)
 lib/
   config.ts     Env validation (Zod)
   risks.ts      Configurable risk categories
@@ -204,8 +205,9 @@ Local API proxy: the browser calls same-origin `/api/*`; in development
 `next.config.ts` rewrites those to `http://localhost:3001/api/*` (the
 backend). That rewrite is dev-only (gated on non-production builds). In
 the single-project production deploy the browser stays on same-origin
-`/api/*` and `vercel.json` routes those to the generated `api/index.js`
-serverless function (a CommonJS bundle of `backend/src/vercel.ts`, which
+`/api/*` and `vercel.json` routes those to the `api/index.js` serverless
+function (a committed CJS stub that requires the generated
+`backend/dist/vercel-api.cjs` bundle of `backend/src/vercel.ts`, which
 re-exports the Express app from `backend/`) — no separate backend URL or
 project required. Setting `NEXT_PUBLIC_API_BASE_URL` opts a frontend
 into a split deployment instead.
@@ -213,8 +215,9 @@ into a split deployment instead.
 ## Deployment (one Vercel project + MongoDB Atlas)
 
 One Vercel project serves this repository: the Next.js UI from `/` and the
-Express API from same-origin `/api/*` (via `vercel.json` → generated
-`api/index.js`, bundled from `backend/src/vercel.ts` during the build).
+Express API from same-origin `/api/*` (via `vercel.json` → `api/index.js`,
+a stub requiring the `backend/dist/vercel-api.cjs` bundle built during
+the deploy from `backend/src/vercel.ts`).
 Not yet deployed from here — these steps are written from the implemented
 code, not from a verified deploy.
 
