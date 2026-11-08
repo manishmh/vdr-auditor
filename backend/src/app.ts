@@ -4,6 +4,7 @@ import { getConfig } from "../../lib/config";
 import { errorHandler, notFound } from "./middleware/errors";
 import { demoRouter } from "./routes/demo";
 import { documentsRouter } from "./routes/documents";
+import { readyRouter } from "./routes/ready";
 
 /**
  * Express application factory. CORS allows exactly one browser origin
@@ -38,6 +39,7 @@ export function createApp(): express.Express {
   });
   app.use("/api/documents", documentsRouter());
   app.use("/api/demo", demoRouter());
+  app.use("/api/ready", readyRouter());
   app.use(notFound);
   app.use(errorHandler);
   return app;

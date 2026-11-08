@@ -48,7 +48,9 @@ export async function uploadDocument(req: Request, res: Response): Promise<void>
       res.status(err.status).json({ error: err.message, reason: err.reason });
       return;
     }
-    console.error(`[api] upload failed: ${err instanceof Error ? err.message : "unknown error"}`);
+    console.error(
+      `[api] upload failed: ${err instanceof Error ? `${err.constructor.name}: ${err.message}` : "unknown error"}`,
+    );
     res.status(500).json({ error: "Upload failed unexpectedly." });
   }
 }

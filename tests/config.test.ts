@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getConfig, resetConfigCache } from "@/lib/config";
 
 const base = {
@@ -112,6 +112,73 @@ describe("getConfig", () => {
         BASETEN_BASE_URL: "http://127.0.0.1:8080/v1",
       }),
     ).toThrow(/https/);
+  });
+
+  it("rejects remote non-TLS mongodb:// URIs in production (Atlas handshake would abort)", () => {
+    const prod = {
+      ...base,
+      NODE_ENV: "production",
+      PILOT_ACCESS_TOKEN: "a".repeat(32),
+      FRONTEND_ORIGIN: "https://app.example.com",
+      STORAGE_BACKEND: "mongodb",
+    } as NodeJS.ProcessEnv;
+    let message = "";
+    try {
+      getConfig({ ...prod, MONGODB_URI: "mongodb://appuser:s3cr3t-pw@db.example.com:27017/app?retryWrites=true" });
+    } catch (err) {
+      message = err instanceof Error ? err.message : "";
+    }
+    expect(message).toContain("without tls=true");
+    expect(message).toContain("db.example.com");
+    expect(message).toContain("mongodb+srv://");
+    expect(message).not.toContain("s3cr3t-pw");
+    expect(message).not.toContain("appuser");
+  });
+
+  it("accepts SRV, explicit-TLS, and localhost URIs in production", () => {
+    const prod = {
+      ...base,
+      NODE_ENV: "production",
+      PILOT_ACCESS_TOKEN: "a".repeat(32),
+      FRONTEND_ORIGIN: "https://app.example.com",
+      STORAGE_BACKEND: "mongodb",
+    } as NodeJS.ProcessEnv;
+    expect(
+      getConfig({ ...prod, MONGODB_URI: "mongodb+srv://u:p@cluster0.abc.mongodb.net/db" }).MONGODB_URI,
+    ).toContain("mongodb+srv://");
+    expect(
+      getConfig({ ...prod, MONGODB_URI: "mongodb://db.example.com:27017/db?tls=true" }).MONGODB_URI,
+    ).toContain("tls=true");
+    expect(
+      getConfig({ ...prod, MONGODB_URI: "mongodb://127.0.0.1:27017/db" }).MONGODB_URI,
+    ).toContain("127.0.0.1");
+  });
+
+  it("does not reject remote non-TLS URIs outside production (connect-time warning applies)", () => {
+    const config = getConfig({
+      ...base,
+      STORAGE_BACKEND: "mongodb",
+      MONGODB_URI: "mongodb://db.example.com:27017/db",
+    });
+    expect(config.STORAGE_BACKEND).toBe("mongodb");
+  });
+
+  it("warns when production uses the ephemeral local store", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      getConfig({
+        ...base,
+        NODE_ENV: "production",
+        PILOT_ACCESS_TOKEN: "a".repeat(32),
+        FRONTEND_ORIGIN: "https://app.example.com",
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("STORAGE_BACKEND=local"));
+      warn.mockClear();
+      getConfig({ ...base, STORAGE_DIR: ".data" });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("never includes secret values in validation errors", () => {

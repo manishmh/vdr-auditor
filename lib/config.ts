@@ -1,5 +1,6 @@
 import path from "node:path";
 import { z } from "zod";
+import { getMongoUriTlsWarning } from "./mongo-uri";
 
 const EnvSchema = z.object({
   INFERENCE_PROVIDER: z.enum(["mock", "baseten"]).default("mock"),
@@ -61,6 +62,28 @@ export function getConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
   if (nodeEnv === "production" && !config.FRONTEND_ORIGIN) {
     throw new Error("Invalid environment: FRONTEND_ORIGIN is required when NODE_ENV=production");
+  }
+  if (
+    nodeEnv === "production" &&
+    config.STORAGE_BACKEND === "mongodb" &&
+    config.MONGODB_URI !== undefined
+  ) {
+    // Fail closed at boot instead of dying mid-handshake: a remote
+    // mongodb:// URI without TLS passes the scheme check above, then the
+    // Atlas handshake aborts with `tlsv1 alert internal error` on the
+    // first database request. The message names the host only, never
+    // credentials (see getMongoUriTlsWarning).
+    const tlsWarning = getMongoUriTlsWarning(config.MONGODB_URI);
+    if (tlsWarning) throw new Error(`Invalid environment: ${tlsWarning}`);
+  }
+  if (nodeEnv === "production" && config.STORAGE_BACKEND === "local") {
+    // Warning only (not a throw: local remains valid for tests and
+    // one-off jobs): on serverless the filesystem is ephemeral, so a
+    // production compose with the local JSON store silently loses
+    // documents across invocations. Production deploys must use mongodb.
+    console.warn(
+      "[config] STORAGE_BACKEND=local with NODE_ENV=production loses data across serverless invocations; use STORAGE_BACKEND=mongodb.",
+    );
   }
   if (env === process.env) cached = config;
   return config;

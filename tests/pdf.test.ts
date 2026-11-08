@@ -7,7 +7,7 @@ import {
   PdfExtractionError,
   resolveStandardFontDataUrl,
 } from "@/lib/pdf/extract";
-import { makePdf } from "./helpers/make-pdf";
+import { makeCompressedPdf, makePdf } from "./helpers/make-pdf";
 
 function consoleNoise(): { warn: ReturnType<typeof vi.spyOn>; error: ReturnType<typeof vi.spyOn> } {
   return { warn: vi.spyOn(console, "warn"), error: vi.spyOn(console, "error") };
@@ -41,6 +41,17 @@ describe("extractPdfText", () => {
     expect(result.pages[0].text).toContain("First line");
     expect(result.pages[0].text).toContain("Second line");
     expect(result.pages[1].text).toBe("");
+  });
+
+  it("extracts text from FlateDecode-compressed streams", async () => {
+    const bytes = makeCompressedPdf([
+      "Compressed page one with change of control language.",
+      "Compressed page two with signatures.",
+    ]);
+    const result = await extractPdfText(bytes, 200);
+    expect(result.pageCount).toBe(2);
+    expect(normalizeText(result.pages[0].text)).toContain("Compressed page one");
+    expect(normalizeText(result.pages[1].text)).toContain("Compressed page two");
   });
 
   it("rejects a file that is not a PDF", async () => {

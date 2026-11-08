@@ -39,7 +39,9 @@ export function errorHandler(err: unknown, req: Request, res: Response, next: Ne
     res.status(400).json({ error: "Request body must be JSON." });
     return;
   }
-  console.error(`[api] ${req.method} ${req.path} failed: ${err instanceof Error ? err.message : "unknown error"}`);
+  console.error(
+    `[api] ${req.method} ${req.path} failed: ${err instanceof Error ? `${err.constructor.name}: ${err.message}` : "unknown error"}`,
+  );
   res.status(500).json({ error: "Request failed unexpectedly." });
 }
 

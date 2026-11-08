@@ -288,6 +288,7 @@ APP=https://your-project.vercel.app
 TOKEN=…   # PILOT_ACCESS_TOKEN, never commit it
 curl -s "$APP/api/health"                       # {"ok":true} — routing works
 curl -s -o /dev/null -w "unauth list: %{http_code}\n" $APP/api/documents   # 401
+curl -s -H "Authorization: Bearer $TOKEN" $APP/api/ready  # {"ok":true,...} — Atlas reachable
 curl -s "$APP/" | head -c 200                   # UI HTML, not an API error
 node scripts/make-synthetic-pdf.mjs /tmp/synthetic-test.pdf
 ID=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" \

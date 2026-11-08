@@ -1,3 +1,5 @@
+import { deflateSync } from "node:zlib";
+
 /**
  * Build a minimal valid multi-page PDF in memory (no dependencies).
  * Each entry becomes one page; an empty string yields a blank page.
@@ -5,6 +7,18 @@
  * characters (curly quotes, dashes, €, ©, …) survive extraction.
  */
 export function makePdf(pageTexts: string[]): Uint8Array {
+  return buildPdf(pageTexts, false);
+}
+
+/**
+ * Like makePdf, but with FlateDecode-compressed content streams, as real
+ * producers emit. Exercises the decompression path in extraction.
+ */
+export function makeCompressedPdf(pageTexts: string[]): Uint8Array {
+  return buildPdf(pageTexts, true);
+}
+
+function buildPdf(pageTexts: string[], compress: boolean): Uint8Array {
   const encoder = new TextEncoder(); // ascii-only structural output
   const chunks: Uint8Array[] = [];
   const offsets: number[] = [];
@@ -100,9 +114,11 @@ export function makePdf(pageTexts: string[]): Uint8Array {
       .map((l) => `(${escape(l)}) Tj T*`)
       .join("\n");
     const stream = `BT /F1 12 Tf 14 TL 72 720 Td\n${lines}\nET`;
-    const streamBytes = encodeStreamBytes(stream);
+    const rawBytes = encodeStreamBytes(stream);
+    const streamBytes = compress ? deflateSync(rawBytes) : rawBytes;
+    const filter = compress ? " /Filter /FlateDecode" : "";
     offsets[contentNums[i]] = cursor;
-    push(`${contentNums[i]} 0 obj\n<< /Length ${streamBytes.length} >>\nstream\n`);
+    push(`${contentNums[i]} 0 obj\n<< /Length ${streamBytes.length}${filter} >>\nstream\n`);
     pushBytes(streamBytes);
     push(`\nendstream\nendobj\n`);
     offsets[pageNums[i]] = cursor;

@@ -16,7 +16,9 @@ export async function seedDemo(_req: Request, res: Response): Promise<void> {
       created: outcome.created,
     });
   } catch (err) {
-    console.error(`[api] demo seed failed: ${err instanceof Error ? err.message : "unknown error"}`);
+    console.error(
+      `[api] demo seed failed: ${err instanceof Error ? `${err.constructor.name}: ${err.message}` : "unknown error"}`,
+    );
     res.status(500).json({ error: "Demo seeding failed." });
   }
 }

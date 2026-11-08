@@ -72,6 +72,7 @@ describe("pilot access gate", () => {
       ["GET", `/api/documents/${id}/file`],
       ["PATCH", `/api/documents/${id}/findings/${id}`],
       ["POST", "/api/demo/seed"],
+      ["GET", "/api/ready"],
     ];
     for (const [method, path] of paths) {
       const res = await fetch(`${baseUrl}${path}`, { method });

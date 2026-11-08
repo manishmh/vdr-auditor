@@ -59,6 +59,16 @@ describe("single-project Vercel routing", () => {
   });
 });
 
+describe("Node runtime pin", () => {
+  it("pins engines.node and .nvmrc so production cannot float majors", () => {
+    const pkg = JSON.parse(readRoot("package.json")) as { engines?: { node?: string } };
+    // Vercel reads engines.node (overriding the dashboard default); the
+    // mongodb driver requires >=20.19.0 and the suite runs on Node 22.
+    expect(pkg.engines?.node).toBe("22.x");
+    expect(readRoot(".nvmrc").trim()).toBe("22");
+  });
+});
+
 describe("production env checklist (.env.prod)", () => {
   const entries = activeEntries(readRoot(".env.prod"));
 
