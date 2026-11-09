@@ -85,6 +85,28 @@ export function getConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       "[config] STORAGE_BACKEND=local with NODE_ENV=production loses data across serverless invocations; use STORAGE_BACKEND=mongodb.",
     );
   }
+  if (env === process.env) {
+    // Application-runtime rule (local dev server, Vercel functions, spawned
+    // processes, integration tests booting the app): MongoDB is the only
+    // storage backend. Filesystem storage is explicit test-only scaffolding
+    // (instantiate LocalFileStore directly in unit tests) and is never
+    // selected by ordinary development or production configuration.
+    // Explicit env objects (isolated unit tests) keep lenient parsing.
+    if (config.STORAGE_BACKEND !== "mongodb") {
+      throw new Error(
+        "Invalid environment: STORAGE_BACKEND=mongodb is required; filesystem storage is test-only and never used by the running application.",
+      );
+    }
+    if (nodeEnv !== "production" && env.MONGODB_DB === undefined) {
+      // Non-production boots must name their database explicitly (local
+      // development uses vdr_auditor_dev) so a dev URI can never silently
+      // land in the production database. Production keeps its existing
+      // configuration, including the default database name.
+      throw new Error(
+        "Invalid environment: MONGODB_DB must be set explicitly for non-production runs (use vdr_auditor_dev for local development).",
+      );
+    }
+  }
   if (env === process.env) cached = config;
   return config;
 }

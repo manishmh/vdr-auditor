@@ -1,7 +1,4 @@
 import { request as httpRequest } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -10,11 +7,22 @@ import { resetConfigCache } from "@/lib/config";
 import { createApp } from "@/backend/src/app";
 import { resetServerContext } from "@/backend/src/context";
 import { errorHandler } from "@/backend/src/middleware/errors";
+import { closeMongo, getMongoDb } from "@/backend/src/repositories/mongo-client";
 import { makePdf } from "./helpers/make-pdf";
 
+const TEST_MONGODB_URI = process.env.TEST_MONGODB_URI;
+
+if (!TEST_MONGODB_URI) {
+  throw new Error(
+    "TEST_MONGODB_URI is required for MongoDB repository tests. " +
+      "Start a disposable instance, e.g. `docker run -d -p 127.0.0.1:27017:27017 mongo:8`, " +
+      "and set TEST_MONGODB_URI=mongodb://127.0.0.1:27017/vdr_auditor_test.",
+  );
+}
+
+const uri: string = TEST_MONGODB_URI;
 const TOKEN = "test-pilot-token-0123456789abcdef";
 
-let dir: string;
 let server: Server;
 let baseUrl: string;
 
@@ -22,16 +30,29 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return { authorization: `Bearer ${TOKEN}`, ...extra };
 }
 
-beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), "vdr-api-"));
-  vi.stubEnv("STORAGE_DIR", dir);
-  vi.stubEnv("STORAGE_BACKEND", "local");
+// Application boots use MongoDB only (same implementation as production),
+// on an isolated database of the disposable test server.
+function stubAppEnv(): void {
+  vi.stubEnv("STORAGE_BACKEND", "mongodb");
+  vi.stubEnv("MONGODB_URI", uri);
+  vi.stubEnv("MONGODB_DB", "vdr_auditor_api_test");
   vi.stubEnv("INFERENCE_PROVIDER", "mock");
   vi.stubEnv("PILOT_ACCESS_TOKEN", TOKEN);
   vi.stubEnv("FRONTEND_ORIGIN", "https://pilot.example.com");
   vi.stubEnv("MAX_UPLOAD_BYTES", String(2 * 1024 * 1024));
+}
+
+beforeAll(async () => {
+  stubAppEnv();
   resetConfigCache();
   resetServerContext();
+  await closeMongo();
+  const db = await getMongoDb(uri, "vdr_auditor_api_test");
+  await Promise.all([
+    db.collection("documents").deleteMany({}),
+    db.collection("findings").deleteMany({}),
+    db.collection("reviewEvents").deleteMany({}),
+  ]);
   const app = createApp();
   await new Promise<void>((resolve) => {
     server = app.listen(0, "127.0.0.1", () => resolve());
@@ -44,20 +65,15 @@ afterAll(async () => {
   await new Promise<void>((resolve, reject) => {
     server.close((err) => (err ? reject(err) : resolve()));
   });
-  await rm(dir, { recursive: true, force: true });
   vi.unstubAllEnvs();
   resetConfigCache();
   resetServerContext();
+  await closeMongo();
 });
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  vi.stubEnv("STORAGE_DIR", dir);
-  vi.stubEnv("STORAGE_BACKEND", "local");
-  vi.stubEnv("INFERENCE_PROVIDER", "mock");
-  vi.stubEnv("PILOT_ACCESS_TOKEN", TOKEN);
-  vi.stubEnv("FRONTEND_ORIGIN", "https://pilot.example.com");
-  vi.stubEnv("MAX_UPLOAD_BYTES", String(2 * 1024 * 1024));
+  stubAppEnv();
   resetConfigCache();
 });
 

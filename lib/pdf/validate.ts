@@ -36,6 +36,31 @@ export interface ValidatedUpload {
 
 const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46]; // %PDF
 
+/**
+ * PDF spec: the header must appear within the first 1024 bytes — leading
+ * bytes are legal, so %PDF is scanned for, not required at byte zero.
+ */
+const PDF_MAGIC_SCAN_BYTES = 1024;
+
+function hasPdfMagic(bytes: Uint8Array): boolean {
+  const end = Math.min(bytes.length, PDF_MAGIC_SCAN_BYTES);
+  outer: for (let i = 0; i + PDF_MAGIC.length <= end; i++) {
+    for (let j = 0; j < PDF_MAGIC.length; j++) {
+      if (bytes[i + j] !== PDF_MAGIC[j]) continue outer;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * First up-to-4 bytes as lowercase hex. Safe log metadata (signature and
+ * length only, never content) for diagnosing extraction failures.
+ */
+export function magicHex(bytes: Uint8Array): string {
+  return [...bytes.slice(0, 4)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** Slack above MAX_UPLOAD_BYTES tolerated in Content-Length for multipart framing overhead. */
 export const UPLOAD_LENGTH_SLACK_BYTES = 1024 * 1024;
 
@@ -74,8 +99,7 @@ export async function validateUpload(input: UploadInput, maxBytes: number): Prom
   if (!/\.pdf$/i.test(base)) {
     throw new UploadValidationError("bad_extension", "Only .pdf files are accepted.");
   }
-  const magicOk = PDF_MAGIC.every((b, i) => input.bytes[i] === b);
-  if (!magicOk) {
+  if (!hasPdfMagic(input.bytes)) {
     throw new UploadValidationError("not_a_pdf", "File content is not a PDF (bad magic bytes).");
   }
   return {

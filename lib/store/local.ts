@@ -14,10 +14,11 @@ import {
 } from "./types";
 
 /**
- * DEMO-ONLY file store. Persists uploads, extracted text, and findings as
- * local JSON files for development and evaluation. Single-process, no
- * encryption, no access control. Production use requires the MongoDB store
- * plus auth, encryption, and retention controls.
+ * TEST-ONLY file store. Persists uploads, extracted text, and findings as
+ * local JSON files for isolated unit tests and the offline eval harness,
+ * which instantiate it directly. It is never selected by application
+ * runtime configuration: development and production use MongoDB only
+ * (see getConfig/getStore), with no filesystem fallback.
  */
 export class LocalFileStore implements DocumentStore {
   private readonly root: string;

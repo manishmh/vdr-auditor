@@ -1,8 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { resetConfigCache } from "@/lib/config";
 import { createApp } from "@/backend/src/app";
@@ -19,7 +16,6 @@ import { makePdf } from "./helpers/make-pdf";
 
 const TOKEN = "test-pilot-token-0123456789abcdef";
 
-let dir: string;
 let server: Server;
 let baseUrl: string;
 
@@ -28,10 +24,9 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
 }
 
 beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), "vdr-dbdown-"));
-  vi.stubEnv("STORAGE_DIR", dir);
   vi.stubEnv("STORAGE_BACKEND", "mongodb");
   vi.stubEnv("MONGODB_URI", "mongodb://127.0.0.1:1/vdr_dbdown_test");
+  vi.stubEnv("MONGODB_DB", "vdr_dbdown_test");
   vi.stubEnv("INFERENCE_PROVIDER", "mock");
   vi.stubEnv("PILOT_ACCESS_TOKEN", TOKEN);
   vi.stubEnv("FRONTEND_ORIGIN", "https://pilot.example.com");
@@ -50,7 +45,6 @@ afterAll(async () => {
   await new Promise<void>((resolve, reject) => {
     server.close((err) => (err ? reject(err) : resolve()));
   });
-  await rm(dir, { recursive: true, force: true });
   vi.unstubAllEnvs();
   resetConfigCache();
   resetServerContext();

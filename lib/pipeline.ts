@@ -4,7 +4,7 @@ import { verifyCandidate } from "./evidence";
 import { CandidateFindingSchema, type StoredFinding } from "./findings/schema";
 import type { InferenceProvider, SectionError } from "./inference/types";
 import { countSignificantChars, extractPdfText, PdfExtractionError, type PageText } from "./pdf/extract";
-import { validateUpload } from "./pdf/validate";
+import { magicHex, validateUpload } from "./pdf/validate";
 import { RISK_CATEGORY_IDS } from "./risks";
 import type { DocumentRecord, DocumentStore } from "./store/types";
 import { splitIntoSections } from "./text/chunk";
@@ -74,7 +74,9 @@ export async function processUpload(
       const detail =
         err instanceof PdfExtractionError ? err.message : "Unexpected error while reading the PDF.";
       const failed = await store.updateDocument(document.id, { status: "failed", statusDetail: detail });
-      console.info(`[pipeline] extraction failed id=${document.id} reason=${detail}`);
+      console.info(
+        `[pipeline] extraction failed id=${document.id} reason=${detail} bytes=${upload.bytes.length} magic=${magicHex(upload.bytes)} cause=${describeCause(err)}`,
+      );
       return { document: failed ?? document, findings: [], droppedInvalid: 0, droppedUnverified: 0, sectionErrors: [] };
     }
 
@@ -92,6 +94,20 @@ export async function processUpload(
 
     return analyzeAndPersist(store, provider, document, extracted.pages, extracted.pageCount);
   });
+}
+
+/**
+ * One-line safe rendering of the underlying parser failure: error class plus
+ * truncated message. Never document content (parser messages are structural;
+ * truncated defensively regardless).
+ */
+function describeCause(err: unknown): string {
+  const root = err instanceof PdfExtractionError && err.cause !== undefined ? err.cause : err;
+  if (root instanceof Error) {
+    const message = root.message.length > 200 ? `${root.message.slice(0, 200)}…` : root.message;
+    return `${root.name}: ${message}`;
+  }
+  return "unknown";
 }
 
 /**

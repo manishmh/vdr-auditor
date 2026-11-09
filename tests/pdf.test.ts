@@ -54,6 +54,22 @@ describe("extractPdfText", () => {
     expect(normalizeText(result.pages[1].text)).toContain("Compressed page two");
   });
 
+  it("parses a header offset by leading bytes", async () => {
+    const valid = makePdf(["Offset header clause with change of control language."]);
+    const offset = new Uint8Array([...new Uint8Array(64).fill(0x0a), ...valid]);
+    const result = await extractPdfText(offset, 200);
+    expect(result.pageCount).toBe(1);
+    expect(normalizeText(result.pages[0].text)).toContain("Offset header clause");
+  });
+
+  it("preserves the underlying parser exception as cause", async () => {
+    const bytes = new TextEncoder().encode("%PDF-1.4\n%not really a pdf at all, just text\n");
+    const err = await extractPdfText(bytes, 200).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PdfExtractionError);
+    expect((err as PdfExtractionError).reason).toBe("malformed");
+    expect((err as PdfExtractionError).cause).toBeInstanceOf(Error);
+  });
+
   it("rejects a file that is not a PDF", async () => {
     const err = await extractPdfText(new TextEncoder().encode("just some text"), 200).catch(
       (e: unknown) => e,

@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getConfig } from "@/lib/config";
 import { BasetenProvider } from "@/lib/inference/baseten";
 import { MockInferenceProvider } from "@/lib/inference/mock";
@@ -88,6 +88,28 @@ describe("processUpload", () => {
     expect(outcome.document.status).toBe("failed");
     expect(outcome.document.statusDetail).toBeTruthy();
     expect(outcome.findings).toHaveLength(0);
+  });
+
+  it("logs bytes, signature, and parser cause on extraction failure (no content)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const bytes = new TextEncoder().encode("%PDF-1.4\n%not really a pdf at all, just text\n");
+      const outcome = await processUpload(
+        store,
+        new MockInferenceProvider(),
+        { filename: "broken.pdf", mimeType: "application/pdf", bytes },
+        config(),
+      );
+      expect(outcome.document.status).toBe("failed");
+      const lines = info.mock.calls.map((args) => String(args[0]));
+      const line = lines.find((l) => l.includes("extraction failed"));
+      expect(line).toContain(`bytes=${bytes.length}`);
+      expect(line).toContain("magic=25504446");
+      expect(line).toMatch(/cause=\w+Exception: .+/);
+      expect(line).not.toContain("not really a pdf");
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it("records needs_ocr when no text can be extracted", async () => {

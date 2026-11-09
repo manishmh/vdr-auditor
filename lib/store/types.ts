@@ -44,9 +44,10 @@ export function assertFindingId(id: string): string {
 }
 
 /**
- * Persistence contract. LocalFileStore (demo-only, eval/offline) implements
- * it in lib/; the production MongoDB implementation lives in
- * backend/src/repositories/mongo-store.ts.
+ * Persistence contract. Implemented for application runtime by the MongoDB
+ * store in backend/src/repositories/mongo-store.ts; LocalFileStore
+ * implements it in lib/ for isolated unit tests and the offline eval
+ * harness only (never selected by runtime configuration).
  */
 export interface DocumentStore {
   createDocument(input: {

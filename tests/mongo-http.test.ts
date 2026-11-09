@@ -1,10 +1,8 @@
-import { mkdtemp, rm } from "node:fs/promises";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { resetConfigCache } from "@/lib/config";
+import { extractPdfText } from "@/lib/pdf/extract";
 import { createApp } from "@/backend/src/app";
 import { resetServerContext } from "@/backend/src/context";
 import { closeMongo, getMongoDb } from "@/backend/src/repositories/mongo-client";
@@ -31,7 +29,6 @@ if (!TEST_MONGODB_URI) {
 const uri: string = TEST_MONGODB_URI;
 const TOKEN = "test-pilot-token-0123456789abcdef";
 
-let dir: string;
 let server: Server;
 let baseUrl: string;
 
@@ -40,8 +37,6 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
 }
 
 beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), "vdr-mongo-http-"));
-  vi.stubEnv("STORAGE_DIR", dir);
   vi.stubEnv("STORAGE_BACKEND", "mongodb");
   vi.stubEnv("MONGODB_URI", uri);
   vi.stubEnv("MONGODB_DB", "vdr_auditor_http_test");
@@ -69,7 +64,6 @@ afterAll(async () => {
   await new Promise<void>((resolve, reject) => {
     server.close((err) => (err ? reject(err) : resolve()));
   });
-  await rm(dir, { recursive: true, force: true });
   vi.unstubAllEnvs();
   resetConfigCache();
   resetServerContext();
@@ -126,5 +120,25 @@ describe("document lifecycle over HTTP with the mongodb backend", () => {
       await fetch(`${baseUrl}/api/documents`, { headers: authHeaders() })
     ).json()) as { documents: { id: string }[] };
     expect(relisted.documents.map((d) => d.id)).not.toContain(id);
+  }, 60000);
+
+  it("extracts identical text from MongoDB-persisted bytes", async () => {
+    const pdf = makePdf(["Persisted clause: change of control notice is required."]);
+    const form = new FormData();
+    form.append("file", new File([Buffer.from(pdf)], "persisted.pdf", { type: "application/pdf" }));
+    const uploaded = await fetch(`${baseUrl}/api/documents`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: form,
+    });
+    expect(uploaded.status).toBe(201);
+    const id = ((await uploaded.json()) as { document: { id: string } }).document.id;
+    const file = await fetch(`${baseUrl}/api/documents/${id}/file`, { headers: authHeaders() });
+    expect(file.status).toBe(200);
+    const retrieved = new Uint8Array(await file.arrayBuffer());
+    expect(retrieved).toEqual(pdf);
+    const extracted = await extractPdfText(retrieved, 200);
+    expect(extracted.pages[0].text).toContain("Persisted clause");
+    await fetch(`${baseUrl}/api/documents/${id}`, { method: "DELETE", headers: authHeaders() });
   }, 60000);
 });

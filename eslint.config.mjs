@@ -51,6 +51,9 @@ const eslintConfig = defineConfig([
     },
   },
   // Mirror boundary: backend and the Vercel adapter never import UI code.
+  // Application runtime is MongoDB-only: the filesystem store adapter is
+  // test-only scaffolding (unit tests and the offline eval harness
+  // instantiate it directly) and must never be imported by backend code.
   {
     files: ["backend/**/*.ts", "api/**/*.ts"],
     rules: {
@@ -59,6 +62,7 @@ const eslintConfig = defineConfig([
         {
           patterns: [
             { group: ["@/components/**", "@/app/**", "../components/**", "../app/**"], message: "Backend must never import frontend UI code." },
+            { group: ["**/lib/store/local"], message: "Filesystem storage is test-only; application runtime uses MongoDB (see getStore)." },
           ],
         },
       ],

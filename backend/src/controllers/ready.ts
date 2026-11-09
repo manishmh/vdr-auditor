@@ -11,16 +11,11 @@ import { getMongoDb } from "../repositories/mongo-client";
  */
 export async function ready(_req: Request, res: Response): Promise<void> {
   const config = getConfig();
-  if (config.STORAGE_BACKEND !== "mongodb") {
-    res.json({ ok: true, storage: config.STORAGE_BACKEND });
-    return;
-  }
+  // getConfig guarantees the mongodb backend and URI (the app cannot boot
+  // otherwise); the guard below only narrows the type.
   const uri = config.MONGODB_URI;
-  if (!uri) {
-    // Unreachable in practice: getConfig requires the URI for this
-    // backend, so the app cannot boot into this state.
-    res.status(503).json({ ok: false, error: "Database unavailable." });
-    return;
+  if (config.STORAGE_BACKEND !== "mongodb" || !uri) {
+    throw new Error("STORAGE_BACKEND=mongodb with MONGODB_URI is required.");
   }
   const started = Date.now();
   try {

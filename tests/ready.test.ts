@@ -1,8 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetConfigCache } from "@/lib/config";
 import { createApp } from "@/backend/src/app";
@@ -14,11 +11,10 @@ const DOCKER_URI = process.env.TEST_MONGODB_URI;
 
 let server: Server | null = null;
 let baseUrl = "";
-let dir = "";
 
 async function boot(extraEnv: Record<string, string>): Promise<void> {
-  dir = await mkdtemp(join(tmpdir(), "vdr-ready-"));
-  vi.stubEnv("STORAGE_DIR", dir);
+  vi.stubEnv("STORAGE_BACKEND", "mongodb");
+  vi.stubEnv("MONGODB_DB", "vdr_auditor_ready_test");
   vi.stubEnv("INFERENCE_PROVIDER", "mock");
   vi.stubEnv("PILOT_ACCESS_TOKEN", TOKEN);
   vi.stubEnv("FRONTEND_ORIGIN", "https://pilot.example.com");
@@ -42,7 +38,6 @@ afterEach(async () => {
     });
     server = null;
   }
-  if (dir) await rm(dir, { recursive: true, force: true });
   vi.unstubAllEnvs();
   resetConfigCache();
   resetServerContext();
@@ -51,22 +46,13 @@ afterEach(async () => {
 
 describe("GET /api/ready", () => {
   it("rejects unauthenticated requests with 401", async () => {
-    await boot({ STORAGE_BACKEND: "local" });
+    await boot({ MONGODB_URI: "mongodb://127.0.0.1:1/vdr_ready_test" });
     const res = await fetch(`${baseUrl}/api/ready`);
     expect(res.status).toBe(401);
   });
 
-  it("reports ok for the local backend without touching any dependency", async () => {
-    await boot({ STORAGE_BACKEND: "local" });
-    const res = await fetch(`${baseUrl}/api/ready`, {
-      headers: { authorization: `Bearer ${TOKEN}` },
-    });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, storage: "local" });
-  });
-
   it("reports 503 with a generic body when MongoDB is unreachable", async () => {
-    await boot({ STORAGE_BACKEND: "mongodb", MONGODB_URI: "mongodb://127.0.0.1:1/vdr_ready_test" });
+    await boot({ MONGODB_URI: "mongodb://127.0.0.1:1/vdr_ready_test" });
     const res = await fetch(`${baseUrl}/api/ready`, {
       headers: { authorization: `Bearer ${TOKEN}` },
     });

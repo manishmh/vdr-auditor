@@ -114,6 +114,25 @@ describe("production env checklist (.env.prod)", () => {
   });
 });
 
+describe("local example env (.env.example)", () => {
+  const entries = activeEntries(readRoot(".env.example"));
+
+  it("configures MongoDB-only development on the dedicated dev database", () => {
+    expect(entries.get("STORAGE_BACKEND")).toBe("mongodb");
+    expect(entries.get("MONGODB_URI")).toBe("mongodb://127.0.0.1:27017");
+    expect(entries.get("MONGODB_DB")).toBe("vdr_auditor_dev");
+    expect(entries.get("INFERENCE_PROVIDER")).toBe("mock");
+  });
+
+  it("holds no credentials or production pointers", () => {
+    expect(entries.has("PILOT_ACCESS_TOKEN")).toBe(false);
+    expect(entries.has("BASETEN_API_KEY")).toBe(false);
+    for (const [name, value] of entries) {
+      expect(value, name).not.toMatch(/mongodb(\+srv)?:\/\/.+@/);
+    }
+  });
+});
+
 describe("env gitignore", () => {
   it("ignores real/placeholder env files but allows the example", () => {
     const lines = readRoot(".gitignore")

@@ -19,12 +19,16 @@ unsuitable for confidential live deals outside a controlled pilot (see below).
 
 ## Quickstart
 
-Requirements: Node.js 22+. MongoDB only if you want the `mongodb` storage
-backend (local docker is fine; Atlas in production).
+Requirements: Node.js 22+ and MongoDB — local development uses the same
+MongoDB-backed storage as production (local docker is fine; Atlas in
+production). There is no filesystem fallback: the app refuses to boot
+without MongoDB configured and reachable.
 
 ```bash
 npm install
-cp .env.example .env   # mock + local defaults work with no extra setup
+cp .env.example .env   # mock inference + local MongoDB defaults (see MongoDB setup)
+docker run -d -p 127.0.0.1:27017:27017 mongo:8   # disposable local server
+npm run config:validate  # confirms MongoDB-only mode (prints no secrets)
 npm run dev            # backend :3001 + frontend :3000 together (use this)
 ```
 
@@ -111,13 +115,13 @@ backend (or shared tooling); nothing secret may use a `NEXT_PUBLIC_` name.
 | `BASETEN_BASE_URL`    | `https://inference.baseten.co/v1` | Model APIs endpoint                     |
 | `BASETEN_TIMEOUT_MS`  | `60000`                          | Per-request timeout                      |
 | `BASETEN_MAX_RETRIES` | `2`                              | Bounded retries on 429/5xx/network only  |
-| `STORAGE_BACKEND`     | `local`                          | `local` (JSON files) or `mongodb`        |
-| `MONGODB_URI`         | —                                | Mongo connection string (required for `mongodb`) |
-| `MONGODB_DB`          | `vdr_auditor`                    | Mongo database name                      |
+| `STORAGE_BACKEND`     | `local` (unit tests)             | `mongodb` (required at runtime; `local` is unit-test-only) |
+| `MONGODB_URI`         | —                                | Mongo connection string (required at runtime) |
+| `MONGODB_DB`          | `vdr_auditor` (prod default)     | Mongo database name (`vdr_auditor_dev` locally, set explicitly) |
 | `TEST_MONGODB_URI`    | —                                | Disposable DB for repository tests       |
 | `MAX_UPLOAD_BYTES`    | `20971520` (20 MB)               | Upload size cap (≤ ~4 MB on Vercel)      |
 | `MAX_PDF_PAGES`       | `200`                            | Page cap per document                    |
-| `STORAGE_DIR`         | `.data`                          | Local storage root (gitignored)          |
+| `STORAGE_DIR`         | `.data`                          | Test-only local store root (unused by the app) |
 | `PILOT_ACCESS_TOKEN`  | —                                | Shared API bearer credential (≥32 chars; required in prod) |
 | `FRONTEND_ORIGIN`     | `http://localhost:3000` (dev)    | Allowed browser origin for CORS (required in prod) |
 | `PORT`                | `3001`                           | Express API port (local)                 |
@@ -127,20 +131,48 @@ backend (or shared tooling); nothing secret may use a `NEXT_PUBLIC_` name.
 
 ## MongoDB setup
 
+Local development uses MongoDB, like production — on a dedicated
+development database, never the production one.
+
 ```bash
-docker run -d -p 127.0.0.1:27017:27017 mongo:8   # local development
-# in .env:
+docker run -d -p 127.0.0.1:27017:27017 mongo:8   # disposable local server
+# in .env (see .env.example for the full template):
 STORAGE_BACKEND=mongodb
-MONGODB_URI=mongodb://127.0.0.1:27017/vdr_auditor
-npm run dev:api
+MONGODB_URI=mongodb://127.0.0.1:27017
+MONGODB_DB=vdr_auditor_dev
+npm run config:validate   # fails closed unless MongoDB mode is selected
+npm run dev:api           # refuses to boot if MongoDB is unreachable
 ```
 
+Prefer a local server for development. To develop against Atlas instead,
+use a `mongodb+srv://` URI with TLS and a least-privilege user scoped to
+the `vdr_auditor_dev` database — never point local development at the
+production database. Missing, malformed, or unreachable configuration
+fails startup (or `/api/ready`) with a clear error; the app never falls
+back to filesystem or in-memory storage. Integration tests use isolated
+databases on a disposable server via `TEST_MONGODB_URI` and never touch
+development or production data.
+
 In production use MongoDB Atlas (`mongodb+srv://…`, TLS) with storage
-encryption verified. Each backend owns its records; switching backends does
-not migrate data. Originals are stored as BSON Binary at pilot scale —
+encryption verified. Originals are stored as BSON Binary at pilot scale —
 production should move them to encrypted object storage. Note the 16 MB
 BSON document ceiling: keep `MAX_UPLOAD_BYTES` at or below ~14 MB with the
 `mongodb` backend; larger files fail with an explicit storage error.
+
+## Local vs production parity
+
+Same in both environments: Node.js 22 (`engines` + `.nvmrc`), the locked
+dependency tree, the MongoDB storage implementation and driver settings,
+the pdf.js parser implementation, Express initialization and routes,
+authentication, and configuration semantics (validated by the same Zod
+schema). Deliberately different: database and credentials (local
+`vdr_auditor_dev` vs Atlas production), inference provider default
+(`mock` locally, `baseten` in production), upload cap (20 MB local
+default vs ~4 MB on Vercel), execution model (long-lived `npm run dev:api`
+server vs serverless functions with payload/duration caps), and log
+retention. The test suite pins the shared parts (storage parity,
+production bundle shape, config rules); environment-specific values are
+documented here, not hidden.
 
 ## Baseten setup
 
@@ -185,7 +217,7 @@ lib/
   text/         Clause-aware section splitting
   evidence.ts   Quotation verification + page resolution
   inference/    Provider interface, mock + Baseten providers, prompt templates
-  store/        Storage interface + local implementation (eval/offline)
+  store/        Storage interface + test-only local file adapter
   pipeline.ts   validate → extract → chunk → analyze → verify → persist
 tests/          Vitest suite (HTTP API tests, Mongo repository tests, eval)
 scripts/        dev runner, eval CLI, config check, fixture generators
@@ -323,6 +355,13 @@ lines; secrets are never logged):
   revalidates): redeploy to pick it up. If it persists after a
   redeploy, the underlying Atlas connection is still failing — fix the
   URI/access first, instances reconnect on the next request.
+- `[pipeline] extraction failed` names `bytes=`, `magic=`, and the
+  underlying parser `cause=` — a `malformed` file that passed the
+  `%PDF` magic check is usually truncated or corrupt inside; fix the
+  file, not the app. `Cannot load "@napi-rs/canvas"` /
+  `Cannot polyfill DOMMatrix|Path2D` warnings are benign: text
+  extraction never renders, so missing canvas only affects rendering,
+  which this app does not do.
 
 ## Security and limitations (read before any live deal)
 

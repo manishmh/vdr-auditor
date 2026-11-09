@@ -9,16 +9,16 @@ import { getStore } from "./context";
  */
 async function main(): Promise<void> {
   const config = getConfig();
-  if (config.STORAGE_BACKEND === "mongodb") {
-    try {
-      await getStore();
-    } catch (err) {
-      console.error(
-        `[api] cannot reach MongoDB database "${config.MONGODB_DB}": ${err instanceof Error ? err.message : "unknown error"}`,
-      );
-      process.exitCode = 1;
-      return;
-    }
+  // MongoDB is mandatory: fail fast on unreachable, misconfigured, or
+  // unauthenticated databases instead of serving without storage.
+  try {
+    await getStore();
+  } catch (err) {
+    console.error(
+      `[api] cannot reach MongoDB database "${config.MONGODB_DB}": ${err instanceof Error ? err.message : "unknown error"}`,
+    );
+    process.exitCode = 1;
+    return;
   }
   const app = createApp();
   const server = app.listen(config.PORT, () => {

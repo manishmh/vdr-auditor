@@ -83,6 +83,18 @@ describe("frontend/backend separation", () => {
     expect(violations).toEqual([]);
   });
 
+  it("keeps the filesystem store out of application runtime (test-only adapter)", () => {
+    const violations: string[] = [];
+    for (const file of sourceFiles("backend/src")) {
+      for (const spec of importsOf(file)) {
+        if (spec.includes("lib/store/local")) {
+          violations.push(`${file}: ${spec}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
   it("keeps backend/src/vercel.ts a thin adapter over backend/", () => {
     const text = readFileSync(join(ROOT, "backend/src/vercel.ts"), "utf8");
     expect(text).toContain("./app");

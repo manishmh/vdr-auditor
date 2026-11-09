@@ -79,7 +79,14 @@ export function resolveStandardFontDataUrl(): string | null {
     const pkgPath = createRequire(import.meta.url).resolve("pdfjs-dist/package.json");
     candidates.push(join(dirname(pkgPath), "standard_fonts"));
   } catch {
-    // Fall through to the cwd-based candidate below.
+    // Fall through to the candidates below.
+  }
+  // CJS-bundle candidate: esbuild shims import.meta as {}, so the require
+  // above throws in the production bundle. __dirname survives bundling
+  // (backend/dist → ../../node_modules) while staying undefined under ESM
+  // loaders, where the typeof guard skips it without throwing.
+  if (typeof __dirname === "string") {
+    candidates.push(join(__dirname, "..", "..", "node_modules", "pdfjs-dist", "standard_fonts"));
   }
   candidates.push(join(process.cwd(), "node_modules", "pdfjs-dist", "standard_fonts"));
   for (const dir of candidates) {

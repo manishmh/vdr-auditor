@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isDeclaredBodyTooLarge,
+  magicHex,
   sanitizeDisplayName,
   UploadValidationError,
   validateUpload,
@@ -65,6 +66,31 @@ describe("validateUpload", () => {
       MAX,
     ).catch((e: unknown) => e);
     expect((err as UploadValidationError).reason).toBe("not_a_pdf");
+  });
+
+  it("accepts a header within the first 1024 bytes (leading bytes are legal)", async () => {
+    const valid = pdfBytes();
+    const offset = new Uint8Array([...new Uint8Array(100).fill(0x20), ...valid]);
+    const result = await validateUpload(
+      { filename: "offset.pdf", mimeType: "application/pdf", size: offset.length, bytes: offset },
+      MAX,
+    );
+    expect(result.size).toBe(offset.length);
+  });
+
+  it("still rejects content without %PDF in the first 1024 bytes", async () => {
+    const bytes = new Uint8Array([...new Uint8Array(1100).fill(0x20), 0x25, 0x50, 0x44, 0x46]);
+    const err = await validateUpload(
+      { filename: "late.pdf", mimeType: "application/pdf", size: bytes.length, bytes },
+      MAX,
+    ).catch((e: unknown) => e);
+    expect((err as UploadValidationError).reason).toBe("not_a_pdf");
+  });
+
+  it("renders signature bytes as lowercase hex for safe logging", () => {
+    expect(magicHex(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]))).toBe("25504446");
+    expect(magicHex(new Uint8Array([0x25]))).toBe("25");
+    expect(magicHex(new Uint8Array(0))).toBe("");
   });
 
   it("strips directory components from filenames", async () => {

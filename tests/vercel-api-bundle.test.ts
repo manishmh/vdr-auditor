@@ -24,6 +24,16 @@ import { makePdf } from "./helpers/make-pdf";
  *    generated backend/dist/vercel-api.cjs bundle, traced by nft).
  */
 
+const TEST_MONGODB_URI = process.env.TEST_MONGODB_URI;
+
+if (!TEST_MONGODB_URI) {
+  throw new Error(
+    "TEST_MONGODB_URI is required for MongoDB repository tests. " +
+      "Start a disposable instance, e.g. `docker run -d -p 127.0.0.1:27017:27017 mongo:8`, " +
+      "and set TEST_MONGODB_URI=mongodb://127.0.0.1:27017/vdr_auditor_test.",
+  );
+}
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const STUB_REQUIRE = "../backend/dist/vercel-api.cjs";
 
@@ -126,15 +136,17 @@ describe("Vercel API loads like production loads it", () => {
     const savedEnv = {
       PILOT_ACCESS_TOKEN: process.env.PILOT_ACCESS_TOKEN,
       STORAGE_BACKEND: process.env.STORAGE_BACKEND,
-      STORAGE_DIR: process.env.STORAGE_DIR,
+      MONGODB_URI: process.env.MONGODB_URI,
+      MONGODB_DB: process.env.MONGODB_DB,
       INFERENCE_PROVIDER: process.env.INFERENCE_PROVIDER,
     };
     const load = createRequire(join(ROOT, "package.json"));
     const crypto = load("node:crypto") as typeof import("node:crypto");
     const token = crypto.randomBytes(32).toString("hex");
     process.env.PILOT_ACCESS_TOKEN = token;
-    process.env.STORAGE_BACKEND = "local";
-    process.env.STORAGE_DIR = join(dir, "store");
+    process.env.STORAGE_BACKEND = "mongodb";
+    process.env.MONGODB_URI = TEST_MONGODB_URI;
+    process.env.MONGODB_DB = "vdr_auditor_bundle_test";
     process.env.INFERENCE_PROVIDER = "mock";
     try {
       buildSync({
