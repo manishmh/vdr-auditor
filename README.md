@@ -356,8 +356,11 @@ lines; secrets are never logged):
   redeploy, the underlying Atlas connection is still failing — fix the
   URI/access first, instances reconnect on the next request.
 - `[pipeline] extraction failed` names `bytes=`, `magic=`, and the
-  underlying parser `cause=` — a `malformed` file that passed the
-  `%PDF` magic check is usually truncated or corrupt inside; fix the
+  underlying parser `cause=`. `cause=…Setting up fake worker
+  failed…pdf.worker.mjs` means the function is missing the worker file
+  next to `pdf.mjs` (shipped via `vercel.json` `includeFiles` — never
+  remove it); `cause=InvalidPDFException…` on a file that passed the
+  `%PDF` magic check means truncated or corrupt content — fix the
   file, not the app. `Cannot load "@napi-rs/canvas"` /
   `Cannot polyfill DOMMatrix|Path2D` warnings are benign: text
   extraction never renders, so missing canvas only affects rendering,

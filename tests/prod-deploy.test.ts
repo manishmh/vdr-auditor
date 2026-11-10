@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -15,6 +15,23 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function readRoot(name: string): string {
   return readFileSync(join(ROOT, name), "utf8");
+}
+
+/** Minimal matcher for our one includeFiles glob: single-level {a,b} plus trailing /**. */
+function expandBraces(pattern: string): string[] {
+  const match = /\{([^{}]+)\}/.exec(pattern);
+  if (!match) return [pattern];
+  return match[1]
+    .split(",")
+    .flatMap((part) =>
+      expandBraces(pattern.slice(0, match.index) + part + pattern.slice(match.index + match[0].length)),
+    );
+}
+
+function globCovers(pattern: string, file: string): boolean {
+  return expandBraces(pattern).some((alt) =>
+    alt.endsWith("/**") ? file.startsWith(alt.slice(0, -3)) : alt === file,
+  );
 }
 
 /** Uncommented KEY=value assignments of an env-style file. */
@@ -41,6 +58,28 @@ describe("single-project Vercel routing", () => {
     // pdf.js font assets ship with the function; without them extraction
     // fails closed by design.
     expect(vercel.functions?.["api/index.js"]?.includeFiles).toContain("pdfjs-dist");
+  });
+
+  it("ships the pdf.js worker and font assets the text path loads at runtime", () => {
+    const vercel = JSON.parse(readRoot("vercel.json")) as {
+      functions?: Record<string, { includeFiles?: unknown }>;
+    };
+    const includeFiles = vercel.functions?.["api/index.js"]?.includeFiles;
+    // Must stay a single glob string: Vercel rejects arrays here
+    // ("includeFiles should be string"), so multiple assets share one
+    // brace-expansion pattern.
+    expect(typeof includeFiles).toBe("string");
+    expect(includeFiles).toContain("pdf.worker.mjs");
+    // The pattern must actually resolve: pdf.mjs loads the worker via an
+    // untraced webpackIgnore'd dynamic import, so a pattern that matches
+    // nothing reproduces "Setting up fake worker failed" in production.
+    for (const file of [
+      "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+      "node_modules/pdfjs-dist/standard_fonts/LiberationSans-Regular.ttf",
+    ]) {
+      expect(globCovers(includeFiles as string, file), file).toBe(true);
+      expect(existsSync(join(ROOT, file)), file).toBe(true);
+    }
   });
 
   it("never bakes the localhost dev proxy into production builds", async () => {
