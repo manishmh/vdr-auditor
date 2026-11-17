@@ -6,6 +6,7 @@ import {
   notFoundHandler,
 } from "./middleware/errorHandler.js";
 import { createHealthRouter } from "./routes/health.js";
+import { createMattersRouter } from "./routes/matters.js";
 
 /** Build a configured Express application. No network I/O happens here. */
 export function createApp(env: Env): Express {
@@ -24,6 +25,14 @@ export function createApp(env: Env): Express {
   app.use(
     "/api/health",
     createHealthRouter({
+      mongodbUri: env.mongodbUri,
+      mongodbDbName: env.mongodbDbName,
+    }),
+  );
+
+  app.use(
+    "/api/matters",
+    createMattersRouter({
       mongodbUri: env.mongodbUri,
       mongodbDbName: env.mongodbDbName,
     }),

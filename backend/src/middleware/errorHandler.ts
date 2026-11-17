@@ -1,5 +1,13 @@
 import type { NextFunction, Request, Response } from "express";
 
+function isBodyParseError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { type?: unknown }).type === "entity.parse.failed"
+  );
+}
+
 /** Final error handler. Logs server-side, returns a generic JSON shape. */
 export function errorHandler(
   err: unknown,
@@ -9,6 +17,12 @@ export function errorHandler(
 ): void {
   console.error("Unhandled request error:", err);
   if (res.headersSent) {
+    return;
+  }
+  if (isBodyParseError(err)) {
+    res
+      .status(400)
+      .json({ error: "invalid_json", message: "Request body must be valid JSON." });
     return;
   }
   res.status(500).json({ error: "internal_error" });
