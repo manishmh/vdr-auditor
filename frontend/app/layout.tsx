@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "VDR Auditor — Status",
-  description: "VDR Auditor foundation status: frontend, backend API, and database health.",
+  title: "VDR Auditor — Matters",
+  description: "VDR Auditor matters, with frontend, backend API, and database health.",
 };
 
 export default function RootLayout({

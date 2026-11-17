@@ -90,6 +90,30 @@ cd frontend && npm run typecheck && npm run lint && npm run build
 cd backend && npm run typecheck && npm run lint && npm test && npm run build
 ```
 
+## Matters API
+
+Matters are stored in the `matters` collection of the configured database
+(one `{ createdAt: -1 }` index backs the newest-first listing).
+
+- `GET /api/matters` → 200 with matters newest first (`[]` when empty).
+- `POST /api/matters` with `{ title, description?, status? }` → 201 with the
+  persisted matter. Title is required (1–120 chars after trimming),
+  description is optional (≤2000 chars), status is `active` (default),
+  `on_hold`, or `completed`. IDs and timestamps are server-generated;
+  client-supplied ones are ignored. Invalid input → 400
+  `{ error: "validation_error", issues: [...] }`.
+- `GET /api/matters/:id` → 200 with the matter, 404 `{ error: "not_found" }`
+  when absent, 400 `{ error: "invalid_id" }` for malformed IDs.
+- When MongoDB is unconfigured or unreachable, all three endpoints return
+  503 `{ error: "database_unavailable" }` without exposing internals.
+
+```bash
+curl http://localhost:4000/api/matters
+curl -X POST http://localhost:4000/api/matters \
+  -H 'content-type: application/json' \
+  -d '{"title":"Smith merger review","status":"active"}'
+```
+
 ## Vercel deployment (two separate projects)
 
 Deploy in this order: backend first, then the frontend, then verify and
