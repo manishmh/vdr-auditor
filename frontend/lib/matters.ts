@@ -76,8 +76,11 @@ function toApiError(httpStatus: number, body: unknown): MattersApiError {
     if (typeof body.message === "string") {
       return new MattersApiError(body.message, httpStatus);
     }
-    if (body.error === "not_found") {
+    if (body.error === "not_found" || body.error === "matter_not_found") {
       return new MattersApiError("Matter not found.", httpStatus);
+    }
+    if (body.error === "document_not_found") {
+      return new MattersApiError("Document not found.", httpStatus);
     }
     if (body.error === "database_unavailable") {
       return new MattersApiError(
@@ -105,7 +108,7 @@ function toNetworkError(err: unknown): MattersApiError {
   return new MattersApiError("Unexpected error. Try again.");
 }
 
-async function requestJson<T>(
+export async function requestJson<T>(
   apiUrl: string,
   path: string,
   init?: RequestInit,
@@ -119,6 +122,9 @@ async function requestJson<T>(
     });
   } catch (err: unknown) {
     throw toNetworkError(err);
+  }
+  if (res.status === 204) {
+    return undefined as T;
   }
   let body: unknown = null;
   try {
@@ -134,6 +140,10 @@ async function requestJson<T>(
 
 export async function listMatters(apiUrl: string): Promise<Matter[]> {
   return requestJson<Matter[]>(apiUrl, "/api/matters");
+}
+
+export async function getMatter(apiUrl: string, id: string): Promise<Matter> {
+  return requestJson<Matter>(apiUrl, `/api/matters/${id}`);
 }
 
 export async function createMatter(

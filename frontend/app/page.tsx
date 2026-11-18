@@ -1,12 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import {
-  fetchStatusReport,
-  type Probe,
-  type ProbeState,
-  type StatusReport,
-} from "@/lib/health";
+import { formatDate } from "@/lib/format";
 import {
   MATTER_DESCRIPTION_MAX_LENGTH,
   MATTER_STATUS_LABELS,
@@ -19,7 +15,6 @@ import {
 } from "@/lib/matters";
 
 const API_URL = process.env["NEXT_PUBLIC_API_URL"];
-const CHECKING: Probe = { state: "checking", detail: "Checking…" };
 
 type ListState =
   | { status: "loading" }
@@ -31,62 +26,6 @@ const STATUS_BADGE: Record<MatterStatus, string> = {
   on_hold: "bg-amber-100 text-amber-800",
   completed: "bg-zinc-200 text-zinc-700",
 };
-
-function formatDate(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) {
-    return iso;
-  }
-  return date.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function HealthBadge({ state }: { state: ProbeState }) {
-  const styles: Record<ProbeState, string> = {
-    checking: "bg-amber-100 text-amber-800",
-    ok: "bg-emerald-100 text-emerald-800",
-    error: "bg-red-100 text-red-800",
-  };
-  const labels: Record<ProbeState, string> = {
-    checking: "Checking",
-    ok: "Healthy",
-    error: "Error",
-  };
-  return (
-    <span
-      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${styles[state]}`}
-      role="status"
-    >
-      {labels[state]}
-    </span>
-  );
-}
-
-function StatusRow({
-  name,
-  description,
-  probe,
-}: {
-  name: string;
-  description: string;
-  probe: Probe;
-}) {
-  return (
-    <li className="flex items-start justify-between gap-4 border-b border-zinc-200 py-4 last:border-b-0">
-      <div>
-        <p className="font-medium">{name}</p>
-        <p className="mt-0.5 text-sm text-zinc-600">{description}</p>
-        {probe.state !== "checking" && (
-          <p className="mt-1 text-sm text-zinc-600">{probe.detail}</p>
-        )}
-      </div>
-      <HealthBadge state={probe.state} />
-    </li>
-  );
-}
 
 export default function MattersPage() {
   // Both server and client render this identical initial state, so hydration
@@ -106,7 +45,6 @@ export default function MattersPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
-  const [report, setReport] = useState<StatusReport | null>(null);
 
   const loadMatters = (apiUrl: string | undefined) => {
     setList({ status: "loading" });
@@ -146,15 +84,6 @@ export default function MattersPage() {
         },
       );
     }
-    let cancelled = false;
-    fetchStatusReport(API_URL).then((next) => {
-      if (!cancelled) {
-        setReport(next);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -195,19 +124,6 @@ export default function MattersPage() {
     );
   };
 
-  const backend = report?.backend ?? CHECKING;
-  const database = report?.database ?? CHECKING;
-  const backendUrl = API_URL ?? "(unconfigured)";
-  const healthFailed =
-    backend.state === "error" || database.state === "error";
-  const healthChecking =
-    backend.state === "checking" || database.state === "checking";
-
-  const onHealthRetry = () => {
-    setReport(null);
-    fetchStatusReport(API_URL).then(setReport);
-  };
-
   return (
     <main className="mx-auto max-w-2xl px-6 py-12">
       <h1 className="text-2xl font-bold tracking-tight">Matters</h1>
@@ -246,7 +162,12 @@ export default function MattersPage() {
                   className="flex items-start justify-between gap-4 px-4 py-3"
                 >
                   <div className="min-w-0">
-                    <p className="truncate font-medium">{matter.title}</p>
+                    <Link
+                      href={`/matters/${matter.id}`}
+                      className="truncate font-medium underline hover:text-zinc-700"
+                    >
+                      {matter.title}
+                    </Link>
                     <p className="mt-0.5 text-sm text-zinc-600">
                       Created {formatDate(matter.createdAt)}
                     </p>
@@ -352,43 +273,6 @@ export default function MattersPage() {
             {submitting ? "Creating…" : "Create matter"}
           </button>
         </form>
-      </section>
-
-      <section aria-label="Service status" className="mt-12">
-        <h2 className="text-lg font-semibold">Service status</h2>
-        <ul className="mt-2">
-          <StatusRow
-            name="Frontend"
-            description="This Next.js application."
-            probe={{ state: "ok", detail: "Page rendered successfully." }}
-          />
-          <StatusRow
-            name="Backend API"
-            description={`GET ${backendUrl}/api/health`}
-            probe={backend}
-          />
-          <StatusRow
-            name="MongoDB"
-            description={`GET ${backendUrl}/api/health/ready`}
-            probe={database}
-          />
-        </ul>
-        <div className="mt-4 flex items-center gap-4">
-          {healthFailed && !healthChecking && (
-            <button
-              type="button"
-              onClick={onHealthRetry}
-              className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
-            >
-              Retry
-            </button>
-          )}
-          {report !== null && (
-            <p className="text-sm text-zinc-600">
-              Last checked: {report.lastChecked}
-            </p>
-          )}
-        </div>
       </section>
     </main>
   );

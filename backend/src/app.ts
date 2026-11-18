@@ -7,6 +7,7 @@ import {
 } from "./middleware/errorHandler.js";
 import { createHealthRouter } from "./routes/health.js";
 import { createMattersRouter } from "./routes/matters.js";
+import { createDocumentsRouter } from "./routes/documents.js";
 
 /** Build a configured Express application. No network I/O happens here. */
 export function createApp(env: Env): Express {
@@ -17,7 +18,7 @@ export function createApp(env: Env): Express {
   app.use(
     cors({
       origin: env.frontendOrigin,
-      methods: ["GET", "POST", "OPTIONS"],
+      methods: ["GET", "POST", "DELETE", "OPTIONS"],
       maxAge: 600,
     }),
   );
@@ -35,6 +36,15 @@ export function createApp(env: Env): Express {
     createMattersRouter({
       mongodbUri: env.mongodbUri,
       mongodbDbName: env.mongodbDbName,
+    }),
+  );
+
+  app.use(
+    "/api/matters/:id/documents",
+    createDocumentsRouter({
+      mongodbUri: env.mongodbUri,
+      mongodbDbName: env.mongodbDbName,
+      maxPdfBytes: env.maxPdfBytes,
     }),
   );
 

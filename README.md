@@ -114,6 +114,40 @@ curl -X POST http://localhost:4000/api/matters \
   -d '{"title":"Smith merger review","status":"active"}'
 ```
 
+## Documents API (PDFs in MongoDB GridFS)
+
+PDF bytes live in MongoDB GridFS (bucket `pdfs`, i.e. `pdfs.files` and
+`pdfs.chunks`); metadata lives in the `documents` collection (one
+`{ matterId: 1, createdAt: -1 }` index backs per-matter listings). Each file
+shares its metadata record's `_id`, so bytes and metadata stay linked with
+no separate storage reference. No third-party file storage is used.
+
+- `GET /api/matters/:id/documents` → 200 with the matter's documents, newest
+  first. 400 for a malformed matter id, 404 `{ error: "matter_not_found" }`.
+- `POST /api/matters/:id/documents` with the raw PDF bytes as the body,
+  `Content-Type: application/pdf`, and the filename in the `X-Filename`
+  header (URL-encoded) → 201 with the stored record. PDFs only: `.pdf`
+  name, exact content type, 25 MiB default cap (`MAX_PDF_BYTES`), and a
+  server-side `%PDF-` magic-header check. Oversize → 413 `file_too_large`,
+  other bad input → 400 `validation_error`.
+- `GET /api/matters/:id/documents/:docId/download` → 200 streaming the PDF
+  bytes as an attachment. 404 `{ error: "document_not_found" }` for missing
+  or cross-matter documents.
+- `DELETE /api/matters/:id/documents/:docId` → 204, removing the stored
+  bytes and the record. A storage failure returns 503 and keeps the
+  record, so retrying never reports a false success.
+
+Database failures return 503 `database_unavailable` with no internals.
+
+```bash
+MID=<matter id>
+curl -X POST http://localhost:4000/api/matters/$MID/documents \
+  -H 'content-type: application/pdf' \
+  -H 'X-Filename: contract.pdf' \
+  --data-binary @contract.pdf
+curl http://localhost:4000/api/matters/$MID/documents
+```
+
 ## Vercel deployment (two separate projects)
 
 Deploy in this order: backend first, then the frontend, then verify and
@@ -159,10 +193,10 @@ never invent or commit real deployment URLs.
 - Build: `npm run build` (default). `NEXT_PUBLIC_API_URL` is baked in at
   build time: after changing it, you must redeploy (rebuild) the frontend
   for the new value to take effect.
-- After deploying, open `https://<your-frontend-domain>` and confirm all
-  three indicators read Healthy. If the backend indicator shows an error,
-  the frontend is likely pointing at the wrong backend URL or the backend
-  deployment failed — fix the value and redeploy.
+- After deploying, open `https://<your-frontend-domain>` and confirm the
+  matters list loads. If it shows a backend error, the frontend is likely
+  pointing at the wrong backend URL or the backend deployment failed — fix
+  the value and redeploy.
 
 ### 3. Verify and reconcile
 
@@ -184,6 +218,5 @@ Notes:
 
 ## Scope boundary
 
-Phase 1 stops here. Later phases (not implemented): AI integration, PDF
-parsing/uploads, legal analysis, auth, billing, document schemas, background
-jobs, and deployment automation.
+Not implemented: AI integration, PDF parsing/analysis, legal analysis, auth,
+billing, background jobs, and deployment automation.

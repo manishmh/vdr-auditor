@@ -8,6 +8,23 @@ describe("loadEnv", () => {
     expect(env.nodeEnv).toBe("development");
     expect(env.mongodbUri).toBeUndefined();
     expect(env.mongodbDbName).toBe("vdr_auditor");
+    expect(env.maxPdfBytes).toBe(25 * 1024 * 1024);
+  });
+
+  it("reads the PDF size cap", () => {
+    const env = loadEnv({
+      FRONTEND_ORIGIN: "http://localhost:3000",
+      MAX_PDF_BYTES: "1024",
+    });
+    expect(env.maxPdfBytes).toBe(1024);
+  });
+
+  it("rejects an invalid PDF size cap by name", () => {
+    for (const value of ["0", "huge", "999999999999"]) {
+      expect(() =>
+        loadEnv({ FRONTEND_ORIGIN: "http://localhost:3000", MAX_PDF_BYTES: value }),
+      ).toThrowError(/MAX_PDF_BYTES/);
+    }
   });
 
   it("throws an actionable error naming the missing variable", () => {

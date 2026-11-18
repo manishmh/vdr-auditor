@@ -4,10 +4,12 @@ export interface Env {
   frontendOrigin: string;
   mongodbUri: string | undefined;
   mongodbDbName: string;
+  maxPdfBytes: number;
 }
 
 const DEFAULT_PORT = 4000;
 const DEFAULT_DB_NAME = "vdr_auditor";
+const DEFAULT_MAX_PDF_BYTES = 25 * 1024 * 1024;
 
 function missing(name: string): Error {
   return new Error(
@@ -50,5 +52,31 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     frontendOrigin,
     mongodbUri: mongodbUri === "" ? undefined : mongodbUri,
     mongodbDbName,
+    maxPdfBytes: parseBoundedInt(
+      source["MAX_PDF_BYTES"],
+      "MAX_PDF_BYTES",
+      DEFAULT_MAX_PDF_BYTES,
+      1,
+      512 * 1024 * 1024,
+    ),
   };
+}
+
+function parseBoundedInt(
+  raw: string | undefined,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(
+      `Invalid environment variable: ${name} must be an integer between ${min} and ${max}.`,
+    );
+  }
+  return parsed;
 }
