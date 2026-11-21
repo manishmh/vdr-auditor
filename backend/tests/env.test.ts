@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadEnv } from "../src/config/env.js";
 
 describe("loadEnv", () => {
@@ -9,6 +9,54 @@ describe("loadEnv", () => {
     expect(env.mongodbUri).toBeUndefined();
     expect(env.mongodbDbName).toBe("vdr_auditor");
     expect(env.maxPdfBytes).toBe(25 * 1024 * 1024);
+    expect(env.metaApiKey).toBeUndefined();
+    expect(env.metaModelId).toBeUndefined();
+    expect(env.metaBaseUrl).toBe("https://api.meta.ai/v1");
+    expect(env.metaTimeoutMs).toBe(60000);
+    expect(env.metaMaxRetries).toBe(2);
+  });
+
+  it("reads model configuration", () => {
+    const env = loadEnv({
+      FRONTEND_ORIGIN: "http://localhost:3000",
+      META_API_KEY: "k",
+      META_MODEL_ID: "m",
+      META_BASE_URL: "https://models.example.test/v1/",
+      META_TIMEOUT_MS: "300000",
+      META_MAX_RETRIES: "1",
+    });
+    expect(env.metaApiKey).toBe("k");
+    expect(env.metaModelId).toBe("m");
+    expect(env.metaBaseUrl).toBe("https://models.example.test/v1");
+    expect(env.metaTimeoutMs).toBe(300000);
+    expect(env.metaMaxRetries).toBe(1);
+  });
+
+  it("respects the configured model timeout as-is", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const env = loadEnv({
+        FRONTEND_ORIGIN: "http://localhost:3000",
+        META_TIMEOUT_MS: "60000",
+      });
+      expect(env.metaTimeoutMs).toBe(60000);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("rejects an invalid model configuration by name", () => {
+    for (const vars of [
+      { META_TIMEOUT_MS: "50" },
+      { META_MAX_RETRIES: "9" },
+      { META_BASE_URL: "http://insecure.example/v1" },
+      { META_BASE_URL: "not a url" },
+    ]) {
+      expect(() =>
+        loadEnv({ FRONTEND_ORIGIN: "http://localhost:3000", ...vars }),
+      ).toThrowError(/META_(TIMEOUT_MS|MAX_RETRIES|BASE_URL)/);
+    }
   });
 
   it("reads the PDF size cap", () => {

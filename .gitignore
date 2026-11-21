@@ -29,3 +29,4 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
+backend/atlas-credentials.env

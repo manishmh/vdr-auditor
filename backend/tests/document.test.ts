@@ -170,6 +170,10 @@ describe("toDocumentResponse", () => {
       sizeBytes: 10,
       createdAt: new Date("2026-01-02T03:04:05.000Z"),
       updatedAt: new Date("2026-01-02T03:04:05.000Z"),
+      extractionStatus: "completed",
+      extractedText: "hello",
+      pageCount: 1,
+      extractedAt: new Date("2026-01-04T05:06:07.000Z"),
     };
     const body = toDocumentResponse(doc);
     expect(body).toEqual({
@@ -180,7 +184,28 @@ describe("toDocumentResponse", () => {
       sizeBytes: 10,
       createdAt: "2026-01-02T03:04:05.000Z",
       updatedAt: "2026-01-02T03:04:05.000Z",
+      extractionStatus: "completed",
+      extractedText: "hello",
+      pageCount: 1,
+      extractedAt: "2026-01-04T05:06:07.000Z",
+      extractionError: undefined,
     });
     expect(body).not.toHaveProperty("_id");
+  });
+
+  it("defaults records written before extraction to pending", () => {
+    const doc: DocumentRecord = {
+      _id: new ObjectId("64f1a2b3c4d5e6f7890abcde"),
+      matterId: new ObjectId("64f1a2b3c4d5e6f7890abcdf"),
+      filename: "a.pdf",
+      contentType: "application/pdf",
+      sizeBytes: 10,
+      createdAt: new Date("2026-01-02T03:04:05.000Z"),
+      updatedAt: new Date("2026-01-02T03:04:05.000Z"),
+    };
+    const body = toDocumentResponse(doc);
+    expect(body.extractionStatus).toBe("pending");
+    expect(body.extractedText).toBeUndefined();
+    expect(body.extractionError).toBeUndefined();
   });
 });

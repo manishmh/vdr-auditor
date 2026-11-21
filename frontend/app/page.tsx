@@ -4,15 +4,27 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { formatDate } from "@/lib/format";
 import {
+  APP_CONFIG_ERROR_MESSAGE,
   MATTER_DESCRIPTION_MAX_LENGTH,
   MATTER_STATUS_LABELS,
   MATTER_TITLE_MAX_LENGTH,
   createMatter,
+  deleteMatter,
   listMatters,
   validateMatterForm,
   type Matter,
   type MatterStatus,
 } from "@/lib/matters";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  ErrorBlock,
+  LoadingLine,
+  PageHeader,
+  Section,
+  type BadgeTone,
+} from "./components/ui";
 
 const API_URL = process.env["NEXT_PUBLIC_API_URL"];
 
@@ -21,10 +33,10 @@ type ListState =
   | { status: "ready"; matters: Matter[] }
   | { status: "error"; message: string };
 
-const STATUS_BADGE: Record<MatterStatus, string> = {
-  active: "bg-emerald-100 text-emerald-800",
-  on_hold: "bg-amber-100 text-amber-800",
-  completed: "bg-zinc-200 text-zinc-700",
+const STATUS_TONE: Record<MatterStatus, BadgeTone> = {
+  active: "success",
+  on_hold: "warning",
+  completed: "neutral",
 };
 
 export default function MattersPage() {
@@ -32,9 +44,10 @@ export default function MattersPage() {
   // always matches; the effect below only subscribes for client-side data.
   const [list, setList] = useState<ListState>(() =>
     API_URL === undefined || API_URL === ""
-      ? { status: "error", message: "NEXT_PUBLIC_API_URL is not configured." }
+      ? { status: "error", message: APP_CONFIG_ERROR_MESSAGE }
       : { status: "loading" },
   );
+  const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<MatterStatus>("active");
@@ -45,13 +58,16 @@ export default function MattersPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const loadMatters = (apiUrl: string | undefined) => {
     setList({ status: "loading" });
     if (apiUrl === undefined || apiUrl === "") {
       setList({
         status: "error",
-        message: "NEXT_PUBLIC_API_URL is not configured.",
+        message: APP_CONFIG_ERROR_MESSAGE,
       });
       return;
     }
@@ -62,7 +78,8 @@ export default function MattersPage() {
       (err: unknown) => {
         setList({
           status: "error",
-          message: err instanceof Error ? err.message : "Could not load matters.",
+          message:
+            err instanceof Error ? err.message : "Couldn't load matters. Please try again.",
         });
       },
     );
@@ -79,7 +96,7 @@ export default function MattersPage() {
           setList({
             status: "error",
             message:
-              err instanceof Error ? err.message : "Could not load matters.",
+              err instanceof Error ? err.message : "Couldn't load matters. Please try again.",
           });
         },
       );
@@ -89,7 +106,7 @@ export default function MattersPage() {
   const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (API_URL === undefined || API_URL === "") {
-      setSubmitError("NEXT_PUBLIC_API_URL is not configured.");
+      setSubmitError(APP_CONFIG_ERROR_MESSAGE);
       return;
     }
     const errors = validateMatterForm({ title, description });
@@ -118,162 +135,249 @@ export default function MattersPage() {
       (err: unknown) => {
         setSubmitting(false);
         setSubmitError(
-          err instanceof Error ? err.message : "Could not create the matter.",
+          err instanceof Error ? err.message : "Couldn't create that matter. Please try again.",
         );
       },
     );
   };
 
-  return (
-    <main className="mx-auto max-w-2xl px-6 py-12">
-      <h1 className="text-2xl font-bold tracking-tight">Matters</h1>
-      <p className="mt-1 text-sm text-zinc-600">
-        Track audit matters. Records are stored in MongoDB.
-      </p>
+  const onDelete = async (matter: Matter) => {
+    if (API_URL === undefined || API_URL === "") {
+      return;
+    }
+    setDeletingId(matter.id);
+    setDeleteError(null);
+    try {
+      await deleteMatter(API_URL, matter.id);
+      setConfirmDeleteId(null);
+      loadMatters(API_URL);
+    } catch (err: unknown) {
+      setDeleteError(
+        err instanceof Error ? err.message : "Couldn't delete this matter. Please try again.",
+      );
+      loadMatters(API_URL);
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
-      <section aria-label="Matters" className="mt-8">
-        {list.status === "loading" && (
-          <p className="text-sm text-zinc-600" role="status">
-            Loading matters…
-          </p>
-        )}
+  return (
+    <main className="mx-auto max-w-6xl px-6 py-10">
+      <PageHeader
+        title="Matters"
+        description="Deals and engagements under review. Each matter groups the documents for one due-diligence effort."
+        actions={
+          <Button
+            variant="primary"
+            onClick={() => {
+              setShowForm((open) => !open);
+              setSubmitError(null);
+              setSubmitSuccess(false);
+            }}
+            aria-expanded={showForm}
+          >
+            {showForm ? "Close" : "New matter"}
+          </Button>
+        }
+      />
+
+      {showForm && (
+        <section aria-label="Create a matter" className="mt-6 rounded-lg border border-slate-200 bg-white p-6">
+          <h2 className="text-base font-semibold text-slate-900">New matter</h2>
+          <form onSubmit={onSubmit} className="mt-4 max-w-2xl space-y-4" noValidate>
+            <div>
+              <label htmlFor="matter-title" className="block text-sm font-medium text-slate-900">
+                Deal name
+              </label>
+              <input
+                id="matter-title"
+                type="text"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-800"
+                placeholder="e.g. ABC Technologies Acquisition"
+                aria-invalid={fieldErrors.title !== undefined}
+              />
+              <p className="mt-1 text-xs tabular-nums text-slate-500">
+                {title.trim().length}/{MATTER_TITLE_MAX_LENGTH} characters
+              </p>
+              {fieldErrors.title !== undefined && (
+                <p className="mt-1 text-sm text-red-700" role="alert">
+                  {fieldErrors.title}
+                </p>
+              )}
+            </div>
+            <div>
+              <label htmlFor="matter-description" className="block text-sm font-medium text-slate-900">
+                Description <span className="font-normal text-slate-500">(optional)</span>
+              </label>
+              <textarea
+                id="matter-description"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                rows={3}
+                className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-800"
+                aria-invalid={fieldErrors.description !== undefined}
+              />
+              <p className="mt-1 text-xs tabular-nums text-slate-500">
+                {description.length}/{MATTER_DESCRIPTION_MAX_LENGTH} characters
+              </p>
+              {fieldErrors.description !== undefined && (
+                <p className="mt-1 text-sm text-red-700" role="alert">
+                  {fieldErrors.description}
+                </p>
+              )}
+            </div>
+            <div>
+              <label htmlFor="matter-status" className="block text-sm font-medium text-slate-900">
+                Status
+              </label>
+              <select
+                id="matter-status"
+                value={status}
+                onChange={(event) => setStatus(event.target.value as MatterStatus)}
+                className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-800 sm:w-56"
+              >
+                <option value="active">Active</option>
+                <option value="on_hold">On hold</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+            {submitError !== null && (
+              <p className="text-sm text-red-700" role="alert">
+                {submitError}
+              </p>
+            )}
+            {submitSuccess && (
+              <p className="text-sm text-emerald-700" role="status">
+                Matter created
+              </p>
+            )}
+            <div className="flex items-center gap-2">
+              <Button variant="primary" type="submit" disabled={submitting}>
+                {submitting ? "Creating…" : "Create matter"}
+              </Button>
+              <Button
+                onClick={() => {
+                  setShowForm(false);
+                  setSubmitError(null);
+                  setSubmitSuccess(false);
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </form>
+        </section>
+      )}
+
+      <Section label="All matters">
+        {list.status === "loading" && <LoadingLine>Loading matters…</LoadingLine>}
         {list.status === "error" && (
-          <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3">
-            <p className="text-sm text-red-800">{list.message}</p>
-            <button
-              type="button"
-              onClick={() => loadMatters(API_URL)}
-              className="mt-2 rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
-            >
-              Retry
-            </button>
-          </div>
+          <ErrorBlock message={list.message} onRetry={() => loadMatters(API_URL)} />
         )}
         {list.status === "ready" &&
           (list.matters.length === 0 ? (
-            <p className="rounded-md border border-zinc-200 px-4 py-6 text-center text-sm text-zinc-600">
-              No matters yet. Create the first one below.
-            </p>
+            <EmptyState
+              title="No matters yet"
+              body="A matter represents one deal or engagement. Create one to start collecting and reviewing its due-diligence documents."
+            />
           ) : (
-            <ul className="divide-y divide-zinc-200 rounded-md border border-zinc-200">
-              {list.matters.map((matter) => (
-                <li
-                  key={matter.id}
-                  className="flex items-start justify-between gap-4 px-4 py-3"
-                >
-                  <div className="min-w-0">
-                    <Link
-                      href={`/matters/${matter.id}`}
-                      className="truncate font-medium underline hover:text-zinc-700"
-                    >
-                      {matter.title}
-                    </Link>
-                    <p className="mt-0.5 text-sm text-zinc-600">
-                      Created {formatDate(matter.createdAt)}
-                    </p>
-                  </div>
-                  <span
-                    className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold ${STATUS_BADGE[matter.status]}`}
-                  >
-                    {MATTER_STATUS_LABELS[matter.status]}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+              <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
+                    <th scope="col" className="px-4 py-2.5 font-medium">
+                      Matter
+                    </th>
+                    <th scope="col" className="w-32 px-4 py-2.5 font-medium">
+                      Status
+                    </th>
+                    <th scope="col" className="w-36 px-4 py-2.5 font-medium">
+                      Updated
+                    </th>
+                    <th scope="col" className="w-36 px-4 py-2.5 text-right font-medium">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {list.matters.map((matter) => (
+                    <tr key={matter.id} className="hover:bg-slate-50">
+                      <td className="max-w-0 px-4 py-3">
+                        <Link
+                          href={`/matters/${matter.id}`}
+                          className="block truncate font-medium text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                        >
+                          {matter.title}
+                        </Link>
+                        {matter.description !== undefined && matter.description !== "" && (
+                          <p className="mt-0.5 truncate text-[13px] text-slate-600">
+                            {matter.description}
+                          </p>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <Badge tone={STATUS_TONE[matter.status]}>
+                          {MATTER_STATUS_LABELS[matter.status]}
+                        </Badge>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-[13px] tabular-nums text-slate-600">
+                        {formatDate(matter.updatedAt)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-right">
+                        <div className="flex flex-wrap justify-end gap-x-3 gap-y-1 text-[13px] font-medium">
+                          <Link
+                            href={`/matters/${matter.id}`}
+                            aria-label={`Open ${matter.title}`}
+                            className="rounded text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                          >
+                            Open →
+                          </Link>
+                          {confirmDeleteId === matter.id ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={deletingId === matter.id}
+                                onClick={() => void onDelete(matter)}
+                                className="rounded font-semibold text-red-700 hover:text-red-800 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                              >
+                                {deletingId === matter.id ? "Deleting…" : "Confirm"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(null)}
+                                className="rounded text-slate-600 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeleteError(null);
+                                setConfirmDeleteId(matter.id);
+                              }}
+                              className="rounded text-slate-600 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           ))}
-      </section>
-
-      <section aria-label="Create a matter" className="mt-10">
-        <h2 className="text-lg font-semibold">New matter</h2>
-        <form onSubmit={onSubmit} className="mt-4 space-y-4" noValidate>
-          <div>
-            <label
-              htmlFor="matter-title"
-              className="block text-sm font-medium"
-            >
-              Title
-            </label>
-            <input
-              id="matter-title"
-              type="text"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
-              placeholder="e.g. Smith merger review"
-              aria-invalid={fieldErrors.title !== undefined}
-            />
-            <p className="mt-1 text-xs text-zinc-500">
-              {title.trim().length}/{MATTER_TITLE_MAX_LENGTH} characters
-            </p>
-            {fieldErrors.title !== undefined && (
-              <p className="mt-1 text-sm text-red-700" role="alert">
-                {fieldErrors.title}
-              </p>
-            )}
-          </div>
-          <div>
-            <label
-              htmlFor="matter-description"
-              className="block text-sm font-medium"
-            >
-              Description <span className="font-normal">(optional)</span>
-            </label>
-            <textarea
-              id="matter-description"
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              rows={3}
-              className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-sm"
-              aria-invalid={fieldErrors.description !== undefined}
-            />
-            <p className="mt-1 text-xs text-zinc-500">
-              {description.length}/{MATTER_DESCRIPTION_MAX_LENGTH} characters
-            </p>
-            {fieldErrors.description !== undefined && (
-              <p className="mt-1 text-sm text-red-700" role="alert">
-                {fieldErrors.description}
-              </p>
-            )}
-          </div>
-          <div>
-            <label
-              htmlFor="matter-status"
-              className="block text-sm font-medium"
-            >
-              Status
-            </label>
-            <select
-              id="matter-status"
-              value={status}
-              onChange={(event) =>
-                setStatus(event.target.value as MatterStatus)
-              }
-              className="mt-1 block w-full rounded-md border border-zinc-300 px-3 py-2 text-sm sm:w-56"
-            >
-              <option value="active">Active</option>
-              <option value="on_hold">On hold</option>
-              <option value="completed">Completed</option>
-            </select>
-          </div>
-          {submitError !== null && (
-            <p className="text-sm text-red-700" role="alert">
-              {submitError}
-            </p>
-          )}
-          {submitSuccess && (
-            <p className="text-sm text-emerald-700" role="status">
-              Matter created.
-            </p>
-          )}
-          <button
-            type="submit"
-            disabled={submitting}
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50"
-          >
-            {submitting ? "Creating…" : "Create matter"}
-          </button>
-        </form>
-      </section>
+        {deleteError !== null && (
+          <p className="mt-2 text-sm text-red-700" role="alert">
+            {deleteError}
+          </p>
+        )}
+      </Section>
     </main>
   );
 }

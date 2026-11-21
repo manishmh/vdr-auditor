@@ -2,13 +2,14 @@ import { Readable } from "node:stream";
 import { ObjectId } from "mongodb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getDbMock, gridfsMocks } = vi.hoisted(() => ({
+const { getDbMock, gridfsMocks, scheduleMock } = vi.hoisted(() => ({
   getDbMock: vi.fn(),
   gridfsMocks: {
     storePdf: vi.fn(),
     openPdfDownload: vi.fn(),
     deletePdf: vi.fn(),
   },
+  scheduleMock: vi.fn(),
 }));
 
 vi.mock("../src/db/mongodb.js", () => ({
@@ -22,6 +23,10 @@ vi.mock("../src/storage/gridfs.js", () => ({
   storePdf: gridfsMocks.storePdf,
   openPdfDownload: gridfsMocks.openPdfDownload,
   deletePdf: gridfsMocks.deletePdf,
+}));
+
+vi.mock("../src/processing/scheduler.js", () => ({
+  scheduleAfterResponse: scheduleMock,
 }));
 
 import { startApp, type RunningApp } from "./matters-fake.js";
@@ -94,23 +99,40 @@ async function postPdf(
 }
 
 describe("POST upload", () => {
-  it("stores PDF bytes and returns 201 with the record", async () => {
+  it("stores PDF bytes and returns 201 with the record and run", async () => {
     app = await startApp(URI);
     const res = await postPdf(MATTER_ID, PDF_BYTES, { "x-filename": "Contract.pdf" });
     expect(res.status).toBe(201);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body["id"]).toMatch(/^[0-9a-f]{24}$/);
-    expect(body).toMatchObject({
+    const document = body["document"] as Record<string, unknown>;
+    expect(document["id"]).toMatch(/^[0-9a-f]{24}$/);
+    expect(document).toMatchObject({
       matterId: MATTER_ID,
       filename: "Contract.pdf",
       contentType: "application/pdf",
       sizeBytes: PDF_BYTES.length,
     });
+    const processing = body["processing"] as Record<string, unknown>;
+    expect(processing["stage"]).toBe("queued");
+    expect(processing["active"]).toBe(true);
+    expect(scheduleMock).toHaveBeenCalledTimes(1);
     expect(gridfsMocks.storePdf).toHaveBeenCalledTimes(1);
     const stored = gridfsMocks.storePdf.mock.calls[0];
     expect(stored?.[1]).toBeInstanceOf(ObjectId);
     expect(stored?.[2]).toBe("Contract.pdf");
     expect(stored?.[3]).toEqual(PDF_BYTES);
+    expect(fake.state.documents).toHaveLength(1);
+  });
+
+  it("still returns 201 with a queued run when scheduling fails", async () => {
+    silenceErrors();
+    scheduleMock.mockRejectedValueOnce(new Error("no waitUntil context"));
+    app = await startApp(URI);
+    const res = await postPdf(MATTER_ID, PDF_BYTES, { "x-filename": "a.pdf" });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as Record<string, unknown>;
+    const processing = body["processing"] as Record<string, unknown>;
+    expect(processing["stage"]).toBe("queued");
     expect(fake.state.documents).toHaveLength(1);
   });
 
@@ -307,6 +329,30 @@ describe("DELETE", () => {
       { method: "DELETE" },
     );
     expect(res.status).toBe(404);
+  });
+
+  it("refuses deletion while processing is actively running", async () => {
+    seedDoc({});
+    fake.blackhole.findOne.mockResolvedValueOnce({
+      _id: new ObjectId(),
+      matterId: new ObjectId(MATTER_ID),
+      docId: new ObjectId(DOC_ID),
+      stage: "analyzing",
+      active: true,
+      attempts: 0,
+      heartbeatAt: new Date(),
+      startedAt: new Date(),
+      updatedAt: new Date(),
+    });
+    app = await startApp(URI);
+    const res = await fetch(
+      `${app.baseUrl}/api/matters/${MATTER_ID}/documents/${DOC_ID}`,
+      { method: "DELETE" },
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "processing_in_progress" });
+    expect(fake.state.documents).toHaveLength(1);
+    expect(gridfsMocks.deletePdf).not.toHaveBeenCalled();
   });
 });
 

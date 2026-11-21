@@ -13,9 +13,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@vercel/functions": "^3.11.3",
     "cors": "^2.8.6",
     "express": "^5.3.0",
-    "mongodb": "^7.9.0"
+    "mongodb": "^7.9.0",
+    "pdfjs-dist": "^6.5.438"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

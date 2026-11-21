@@ -7,6 +7,8 @@ import {
 } from "./middleware/errorHandler.js";
 import { createHealthRouter } from "./routes/health.js";
 import { createMattersRouter } from "./routes/matters.js";
+import { createProcessingRouter } from "./routes/processing.js";
+import { createAnalysesRouter } from "./routes/analyses.js";
 import { createDocumentsRouter } from "./routes/documents.js";
 
 /** Build a configured Express application. No network I/O happens here. */
@@ -18,7 +20,7 @@ export function createApp(env: Env): Express {
   app.use(
     cors({
       origin: env.frontendOrigin,
-      methods: ["GET", "POST", "DELETE", "OPTIONS"],
+      methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
       maxAge: 600,
     }),
   );
@@ -41,12 +43,11 @@ export function createApp(env: Env): Express {
 
   app.use(
     "/api/matters/:id/documents",
-    createDocumentsRouter({
-      mongodbUri: env.mongodbUri,
-      mongodbDbName: env.mongodbDbName,
-      maxPdfBytes: env.maxPdfBytes,
-    }),
+    createDocumentsRouter({ env }),
   );
+
+  app.use("/api/matters/:id", createAnalysesRouter({ env }));
+  app.use("/api/processing", createProcessingRouter({ env }));
 
   app.use(notFoundHandler);
   app.use(errorHandler);

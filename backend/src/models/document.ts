@@ -3,9 +3,19 @@ import { ObjectId } from "mongodb";
 export const DOCUMENT_FILENAME_MAX_LENGTH = 255;
 export const PDF_CONTENT_TYPE = "application/pdf";
 
+export const EXTRACTION_STATUSES = [
+  "pending",
+  "processing",
+  "completed",
+  "no_text",
+  "failed",
+] as const;
+export type DocumentExtractionStatus = (typeof EXTRACTION_STATUSES)[number];
+
 /**
  * Native MongoDB metadata shape. PDF bytes live in GridFS under the same
- * `_id`, so no separate storage reference is needed.
+ * `_id`, so no separate storage reference is needed. Extraction fields are
+ * optional so records written before extraction existed still map cleanly.
  */
 export interface DocumentRecord {
   _id: ObjectId;
@@ -15,6 +25,11 @@ export interface DocumentRecord {
   sizeBytes: number;
   createdAt: Date;
   updatedAt: Date;
+  extractionStatus?: DocumentExtractionStatus;
+  extractedText?: string;
+  pageCount?: number;
+  extractedAt?: Date;
+  extractionError?: string;
 }
 
 /** API response shape. Never includes storage internals. */
@@ -26,6 +41,11 @@ export interface MatterDocument {
   sizeBytes: number;
   createdAt: string;
   updatedAt: string;
+  extractionStatus: DocumentExtractionStatus;
+  extractedText?: string;
+  pageCount?: number;
+  extractedAt?: string;
+  extractionError?: string;
 }
 
 export interface UploadValidationIssue {
@@ -166,5 +186,10 @@ export function toDocumentResponse(doc: DocumentRecord): MatterDocument {
     sizeBytes: doc.sizeBytes,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
+    extractionStatus: doc.extractionStatus ?? "pending",
+    extractedText: doc.extractedText,
+    pageCount: doc.pageCount,
+    extractedAt: doc.extractedAt?.toISOString(),
+    extractionError: doc.extractionError,
   };
 }

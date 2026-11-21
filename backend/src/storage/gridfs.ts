@@ -38,6 +38,45 @@ export function openPdfDownload(db: Db, fileId: ObjectId): NodeJS.ReadableStream
   return pdfBucket(db).openDownloadStream(fileId);
 }
 
+function isFileNotFoundError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) {
+    return false;
+  }
+  const record = err as { code?: unknown; message?: unknown };
+  return (
+    record.code === "ENOENT" ||
+    (typeof record.message === "string" &&
+      record.message.startsWith("FileNotFound:"))
+  );
+}
+
+/**
+ * Read stored PDF bytes into memory, or undefined when the file is absent.
+ * Other storage errors propagate to the caller.
+ */
+export async function readPdfBytes(
+  db: Db,
+  fileId: ObjectId,
+): Promise<Buffer | undefined> {
+  const stream = pdfBucket(db).openDownloadStream(fileId);
+  return new Promise<Buffer | undefined>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    stream.once("error", (err: unknown) => {
+      if (isFileNotFoundError(err)) {
+        resolve(undefined);
+      } else {
+        reject(err instanceof Error ? err : new Error("GridFS read failed"));
+      }
+    });
+    stream.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+    stream.once("end", () => {
+      resolve(Buffer.concat(chunks));
+    });
+  });
+}
+
 /**
  * Delete stored PDF bytes. Tolerates an already-absent file so that a
  * retried delete heals instead of failing forever.

@@ -1,18 +1,57 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
-import { formatBytes, formatDate } from "@/lib/format";
-import { getMatter, type Matter } from "@/lib/matters";
+import { useParams, useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  listAnalyses,
+  listFindings,
+  type DocAnalysis,
+  type Finding,
+} from "@/lib/analyses";
+import { formatBytes, formatDate } from "@/lib/format";
+import {
+  APP_CONFIG_ERROR_MESSAGE,
+  deleteMatter,
+  getMatter,
+  MATTER_STATUS_LABELS,
+  type Matter,
+  type MatterStatus,
+} from "@/lib/matters";
+import {
+  EXTRACTION_STATUS_LABELS,
   deleteDocument,
   downloadDocument,
+  extractionErrorMessage,
   listDocuments,
   uploadDocument,
   validatePdfFile,
+  type DocumentExtractionStatus,
   type MatterDocument,
 } from "@/lib/documents";
+import {
+  isActiveProcessingStage,
+  isStaleActiveRun,
+  latestRunPerDoc,
+  listProcessingRuns,
+  notifyProcessingChanged,
+  PROCESSING_STAGE_LABELS,
+  processingErrorMessage,
+  retryProcessing,
+  type ProcessingRunSummary,
+  type ProcessingStage,
+} from "@/lib/processing";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  ErrorBlock,
+  LoadingLine,
+  ProgressBar,
+  Section,
+  Toast,
+  type BadgeTone,
+} from "../../components/ui";
 
 const API_URL = process.env["NEXT_PUBLIC_API_URL"];
 const MAX_PDF_MB = (() => {
@@ -35,12 +74,61 @@ interface UploadState {
   message: string | null;
 }
 
+interface CompletionNotice {
+  key: number;
+  docId: string;
+  filename: string;
+  ok: boolean;
+}
+
+const NOTICE_REDIRECT_MS = 4000;
+
+const MATTER_TONE: Record<MatterStatus, BadgeTone> = {
+  active: "success",
+  on_hold: "warning",
+  completed: "neutral",
+};
+
+const EXTRACTION_TONE: Record<DocumentExtractionStatus, BadgeTone> = {
+  pending: "neutral",
+  processing: "warning",
+  completed: "success",
+  no_text: "warning",
+  failed: "danger",
+};
+
+const PROCESSING_TONE: Record<ProcessingStage, BadgeTone> = {
+  queued: "neutral",
+  extracting: "warning",
+  analyzing: "warning",
+  validating: "warning",
+  completed: "success",
+  completed_with_limits: "warning",
+  failed: "danger",
+};
+
+const MATTER_POLL_MS = 4000;
+
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
+/**
+ * Cheap fingerprint of the visible processing runs. Every server-side write
+ * to documents, analyses, or findings happens inside a driver stage
+ * transition, which always bumps a run's stage or updatedAt — so a stable
+ * signature means the heavy collections cannot have changed.
+ */
+function runsSignature(runs: ProcessingRunSummary[]): string {
+  return runs
+    .map((run) => `${run.id}:${run.stage}:${run.updatedAt}`)
+    .sort()
+    .join("|");
+}
+
 export default function MatterDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const rawId = params?.id;
   const matterId = typeof rawId === "string" ? rawId : "";
 
@@ -50,8 +138,8 @@ export default function MatterDetailPage() {
           status: "error",
           message:
             matterId === ""
-              ? "Missing matter id."
-              : "NEXT_PUBLIC_API_URL is not configured.",
+              ? "We couldn't find that matter."
+              : APP_CONFIG_ERROR_MESSAGE,
         }
       : { status: "loading" },
   );
@@ -62,7 +150,112 @@ export default function MatterDetailPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [runs, setRuns] = useState<ProcessingRunSummary[]>([]);
+  const [analyses, setAnalyses] = useState<LoadState<DocAnalysis[]>>({
+    status: "loading",
+  });
+  const [findings, setFindings] = useState<LoadState<Finding[]>>({
+    status: "loading",
+  });
+  const [confirmDeleteMatter, setConfirmDeleteMatter] = useState(false);
+  const [deletingMatter, setDeletingMatter] = useState(false);
+  const [matterError, setMatterError] = useState<string | null>(null);
+  // Guards the background poll: one runs-refresh in flight at most, and the
+  // last-seen runs signature so unchanged state never refetches documents,
+  // analyses, and findings (the documents payload carries full extracted
+  // text and is hundreds of kB per fetch).
+  const pollInFlight = useRef(false);
+  const lastRunsSignature = useRef("");
+  const [notice, setNotice] = useState<CompletionNotice | null>(null);
+  // Documents uploaded in this session, watched for completion so the page
+  // can announce and open their results. Older documents never trigger it.
+  const watchIdsRef = useRef(new Map<string, string>());
+  const runsRef = useRef<ProcessingRunSummary[]>([]);
+  const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    runsRef.current = runs;
+  });
+
+  const clearRedirect = useCallback(() => {
+    if (redirectTimer.current !== null) {
+      clearTimeout(redirectTimer.current);
+      redirectTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearRedirect(), [clearRedirect]);
+
+  const dismissNotice = useCallback(() => {
+    clearRedirect();
+    setNotice(null);
+  }, [clearRedirect]);
+
+  /**
+   * Refresh documents, analyses, findings, and processing runs together.
+   * Silent refreshes keep the last known state on transient failure so
+   * background polling never flickers the page into an error state.
+   */
+  const loadAll = useCallback((apiUrl: string, id: string, silent: boolean) => {
+    if (!silent) {
+      setDocs({ status: "loading" });
+      setAnalyses({ status: "loading" });
+      setFindings({ status: "loading" });
+    }
+    listDocuments(apiUrl, id).then(
+      (documents) => {
+        setDocs({ status: "ready", value: documents });
+      },
+      (err: unknown) => {
+        if (!silent) {
+          setDocs({
+            status: "error",
+            message: errorMessage(err, "Couldn't load documents. Please try again."),
+          });
+        }
+      },
+    );
+    listAnalyses(apiUrl, id).then(
+      (items) => {
+        setAnalyses({ status: "ready", value: items });
+      },
+      (err: unknown) => {
+        if (!silent) {
+          setAnalyses({
+            status: "error",
+            message: errorMessage(err, "Couldn't load analysis. Please try again."),
+          });
+        }
+      },
+    );
+    listFindings(apiUrl, id).then(
+      (items) => {
+        setFindings({ status: "ready", value: items });
+      },
+      (err: unknown) => {
+        if (!silent) {
+          setFindings({
+            status: "error",
+            message: errorMessage(err, "Couldn't load findings. Please try again."),
+          });
+        }
+      },
+    );
+    listProcessingRuns(apiUrl, id).then(
+      (all) => {
+        const latest = latestRunPerDoc(all);
+        lastRunsSignature.current = runsSignature(latest);
+        setRuns(latest);
+      },
+      () => {
+        if (!silent) {
+          setRuns([]);
+        }
+      },
+    );
+  }, []);
 
   useEffect(() => {
     if (matterId === "" || API_URL === undefined || API_URL === "") {
@@ -73,32 +266,101 @@ export default function MatterDetailPage() {
     getMatter(apiUrl, id).then(
       (value) => {
         setMatter({ status: "ready", value });
-        listDocuments(apiUrl, id).then(
-          (documents) => {
-            setDocs({ status: "ready", value: documents });
-          },
-          (err: unknown) => {
-            setDocs({ status: "error", message: errorMessage(err, "Could not load documents.") });
-          },
-        );
+        loadAll(apiUrl, id, false);
       },
       (err: unknown) => {
-        setMatter({ status: "error", message: errorMessage(err, "Could not load the matter.") });
-        setDocs({ status: "error", message: "Could not load documents." });
+        const message = errorMessage(err, "Couldn't load this matter. Please try again.");
+        setMatter({ status: "error", message });
+        setDocs({ status: "error", message });
+        setAnalyses({ status: "error", message });
+        setFindings({ status: "error", message });
       },
     );
-  }, [matterId]);
+  }, [matterId, loadAll]);
+
+  const hasActiveRuns = runs.some((run) => isActiveProcessingStage(run.stage));
+
+  // Follow persisted processing state while anything runs here; the runs
+  // themselves live on the server, so refresh and navigation are safe. Each
+  // tick refetches only the two small collections (runs plus live analysis
+  // progress): the heavy collections reload only when a run's stage or
+  // timestamp actually changed. Ticks never overlap (responses slower than
+  // the interval used to pile up) and never fire for a hidden tab.
+  useEffect(() => {
+    if (matterId === "" || API_URL === undefined || API_URL === "" || !hasActiveRuns) {
+      return;
+    }
+    const apiUrl: string = API_URL;
+    const id: string = matterId;
+    const tick = () => {
+      if (typeof document !== "undefined" && document.hidden) {
+        return;
+      }
+      if (pollInFlight.current) {
+        return;
+      }
+      pollInFlight.current = true;
+      const runsDone = listProcessingRuns(apiUrl, id).then(
+        (all) => {
+          const latest = latestRunPerDoc(all);
+          setRuns(latest);
+          const signature = runsSignature(latest);
+          if (signature !== lastRunsSignature.current) {
+            lastRunsSignature.current = signature;
+            loadAll(apiUrl, id, true);
+          }
+          const previous = runsRef.current;
+          for (const [docId, filename] of watchIdsRef.current) {
+            const was = previous.find((item) => item.docId === docId);
+            const now = latest.find((item) => item.docId === docId);
+            if (
+              was === undefined ||
+              !isActiveProcessingStage(was.stage) ||
+              (now !== undefined && isActiveProcessingStage(now.stage))
+            ) {
+              continue;
+            }
+            watchIdsRef.current.delete(docId);
+            if (now === undefined) {
+              continue;
+            }
+            const ok = now.stage === "completed" || now.stage === "completed_with_limits";
+            clearRedirect();
+            setNotice({ key: Date.now(), docId, filename, ok });
+            if (ok) {
+              redirectTimer.current = setTimeout(() => {
+                redirectTimer.current = null;
+                if (typeof document === "undefined" || !document.hidden) {
+                  router.push(`/matters/${id}/docs/${docId}`);
+                }
+              }, NOTICE_REDIRECT_MS);
+            }
+          }
+        },
+        () => {
+          // Keep the last known state; the next tick retries.
+        },
+      );
+      const analysesDone = listAnalyses(apiUrl, id).then(
+        (items) => {
+          setAnalyses({ status: "ready", value: items });
+        },
+        () => {
+          // Progress simply waits for the next tick.
+        },
+      );
+      void Promise.all([runsDone, analysesDone]).finally(() => {
+        pollInFlight.current = false;
+      });
+    };
+    const timer = setInterval(tick, MATTER_POLL_MS);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [matterId, hasActiveRuns, loadAll, clearRedirect, router]);
 
   const reloadDocs = (apiUrl: string, id: string) => {
-    setDocs({ status: "loading" });
-    listDocuments(apiUrl, id).then(
-      (documents) => {
-        setDocs({ status: "ready", value: documents });
-      },
-      (err: unknown) => {
-        setDocs({ status: "error", message: errorMessage(err, "Could not load documents.") });
-      },
-    );
+    loadAll(apiUrl, id, false);
   };
 
   const patchUpload = (key: number, patch: Partial<UploadState>) => {
@@ -109,22 +371,37 @@ export default function MatterDetailPage() {
     );
   };
 
-  const runUpload = async (apiUrl: string, id: string, file: File, key: number) => {
+  const runUpload = async (
+    apiUrl: string,
+    id: string,
+    file: File,
+    key: number,
+  ): Promise<MatterDocument | null> => {
     const precheck = validatePdfFile(file, MAX_PDF_BYTES);
     if (precheck !== undefined) {
       patchUpload(key, { phase: "error", message: precheck });
-      return;
+      return null;
     }
     try {
       patchUpload(key, { phase: "uploading", progress: 0, message: null });
-      await uploadDocument(apiUrl, id, file, (progress) => {
+      const uploaded = await uploadDocument(apiUrl, id, file, (progress) => {
         patchUpload(key, { progress });
       });
       patchUpload(key, { phase: "done", progress: 100 });
+      // Upload schedules extraction + analysis on the server; pick up the
+      // new run immediately, wake the global indicator, and watch this
+      // document so its completion is announced.
+      watchIdsRef.current.set(uploaded.id, uploaded.filename);
+      loadAll(apiUrl, id, true);
+      notifyProcessingChanged();
+      return uploaded;
     } catch (err: unknown) {
-      patchUpload(key, { phase: "error", message: errorMessage(err, "Upload failed.") });
+      patchUpload(key, {
+        phase: "error",
+        message: errorMessage(err, "The upload failed. Please try again."),
+      });
+      return null;
     }
-    reloadDocs(apiUrl, id);
   };
 
   const onFilesSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -160,6 +437,8 @@ export default function MatterDetailPage() {
           await runUpload(apiUrl, id, file, entry.key);
         }
       }
+      // Uploads stay on the matter page with live row progress; when each
+      // analysis finishes, a notification offers its results.
     })();
   };
 
@@ -172,10 +451,50 @@ export default function MatterDetailPage() {
     try {
       await downloadDocument(API_URL, matterId, doc);
     } catch (err: unknown) {
-      setActionError(errorMessage(err, "Could not download the document."));
+      setActionError(errorMessage(err, "Couldn't download this file. Please try again."));
     } finally {
       setDownloadingId(null);
     }
+  };
+
+  const onRetry = async (doc: MatterDocument) => {
+    if (API_URL === undefined || API_URL === "" || matterId === "") {
+      return;
+    }
+    setRetryingId(doc.id);
+    setActionError(null);
+    try {
+      await retryProcessing(API_URL, matterId, doc.id);
+      loadAll(API_URL, matterId, true);
+      notifyProcessingChanged();
+    } catch (err: unknown) {
+      setActionError(errorMessage(err, "Couldn't restart processing. Please try again."));
+      loadAll(API_URL, matterId, true);
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
+  const runForDoc = (docId: string): ProcessingRunSummary | undefined =>
+    runs.find((run) => run.docId === docId);
+
+  const analysisForDoc = (docId: string): DocAnalysis | undefined =>
+    analyses.status === "ready"
+      ? analyses.value.find((item) => item.docId === docId)
+      : undefined;
+
+  const findingsForDoc = (docId: string): Finding[] =>
+    findings.status === "ready"
+      ? findings.value.filter((item) => item.docId === docId)
+      : [];
+
+  const findingsSummary = (items: Finding[]): string | null => {
+    if (items.length === 0) {
+      return null;
+    }
+    const high = items.filter((item) => item.severity === "high").length;
+    const noun = items.length === 1 ? "finding" : "findings";
+    return high > 0 ? `${items.length} ${noun} · ${high} high` : `${items.length} ${noun}`;
   };
 
   const onDelete = async (doc: MatterDocument) => {
@@ -187,151 +506,155 @@ export default function MatterDetailPage() {
     try {
       await deleteDocument(API_URL, matterId, doc.id);
       setConfirmDeleteId(null);
-      reloadDocs(API_URL, matterId);
+      loadAll(API_URL, matterId, true);
+      notifyProcessingChanged();
     } catch (err: unknown) {
-      setActionError(errorMessage(err, "Could not delete the document."));
+      setActionError(errorMessage(err, "Couldn't delete this document. Please try again."));
+      loadAll(API_URL, matterId, true);
     } finally {
       setDeletingId(null);
     }
   };
 
+  const onDeleteMatter = async () => {
+    if (API_URL === undefined || API_URL === "" || matterId === "") {
+      return;
+    }
+    setDeletingMatter(true);
+    setMatterError(null);
+    try {
+      await deleteMatter(API_URL, matterId);
+      notifyProcessingChanged();
+      router.push("/");
+    } catch (err: unknown) {
+      setMatterError(errorMessage(err, "Couldn't delete this matter. Please try again."));
+    } finally {
+      setDeletingMatter(false);
+      setConfirmDeleteMatter(false);
+    }
+  };
+
+  const uploadReady = API_URL !== undefined && API_URL !== "" && matterId !== "";
+
   return (
-    <main className="mx-auto max-w-2xl px-6 py-12">
-      <Link href="/" className="text-sm text-zinc-600 underline hover:text-zinc-900">
-        ← All matters
-      </Link>
+    <main className="mx-auto max-w-6xl px-6 py-8">
+      <nav aria-label="Breadcrumb">
+        <ol className="flex items-center gap-2 text-sm">
+          <li>
+            <Link
+              href="/"
+              className="rounded text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+            >
+              Matters
+            </Link>
+          </li>
+          <li aria-hidden="true" className="text-slate-400">
+            /
+          </li>
+          <li aria-current="page" className="truncate text-slate-600">
+            {matter.status === "ready" ? matter.value.title : "…"}
+          </li>
+        </ol>
+      </nav>
 
       {matter.status === "loading" && (
-        <p className="mt-4 text-sm text-zinc-600" role="status">
-          Loading matter…
-        </p>
+        <div className="mt-4">
+          <LoadingLine>Loading matter…</LoadingLine>
+        </div>
       )}
       {matter.status === "error" && (
-        <p className="mt-4 text-sm text-red-700" role="alert">
-          {matter.message}
-        </p>
+        <div className="mt-4">
+          <ErrorBlock message={matter.message} />
+        </div>
       )}
       {matter.status === "ready" && (
-        <>
-          <h1 className="mt-4 text-2xl font-bold tracking-tight">{matter.value.title}</h1>
-          <p className="mt-1 text-sm text-zinc-600">
-            Status: {matter.value.status.replace("_", " ")}
-            {matter.value.description !== undefined && matter.value.description !== ""
-              ? ` — ${matter.value.description}`
-              : ""}
-          </p>
-        </>
-      )}
-
-      <section aria-label="Documents" className="mt-8">
-        <h2 className="text-lg font-semibold">Documents</h2>
-        {docs.status === "loading" && (
-          <p className="mt-2 text-sm text-zinc-600" role="status">
-            Loading documents…
-          </p>
-        )}
-        {docs.status === "error" && (
-          <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-4 py-3">
-            <p className="text-sm text-red-800">{docs.message}</p>
-            {API_URL !== undefined && API_URL !== "" && matterId !== "" && (
-              <button
-                type="button"
-                onClick={() => reloadDocs(API_URL, matterId)}
-                className="mt-2 rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+        <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+              {matter.value.title}
+            </h1>
+            {matter.value.description !== undefined && matter.value.description !== "" ? (
+              <p className="mt-1 max-w-3xl text-sm text-slate-600">{matter.value.description}</p>
+            ) : (
+              <p className="mt-1 text-sm text-slate-500">No description</p>
+            )}
+            <p className="mt-2 text-[13px] tabular-nums text-slate-500">
+              Created {formatDate(matter.value.createdAt)} · Updated{" "}
+              {formatDate(matter.value.updatedAt)}
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            <Badge tone={MATTER_TONE[matter.value.status]}>
+              {MATTER_STATUS_LABELS[matter.value.status]}
+            </Badge>
+            {confirmDeleteMatter ? (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={deletingMatter}
+                  onClick={() => void onDeleteMatter()}
+                >
+                  {deletingMatter ? "Deleting…" : "Confirm delete"}
+                </Button>
+                <Button size="sm" onClick={() => setConfirmDeleteMatter(false)}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <Button
+                size="sm"
+                disabled={hasActiveRuns}
+                title={
+                  hasActiveRuns
+                    ? "Deletion is paused while documents are processing."
+                    : "Delete this matter and all of its documents and findings."
+                }
+                onClick={() => {
+                  setMatterError(null);
+                  setConfirmDeleteMatter(true);
+                }}
               >
-                Retry
-              </button>
+                Delete matter
+              </Button>
             )}
           </div>
-        )}
-        {docs.status === "ready" &&
-          (docs.value.length === 0 ? (
-            <p className="mt-2 rounded-md border border-zinc-200 px-4 py-6 text-center text-sm text-zinc-600">
-              No documents yet. Upload the first PDF below.
-            </p>
-          ) : (
-            <ul className="mt-2 divide-y divide-zinc-200 rounded-md border border-zinc-200">
-              {docs.value.map((doc) => (
-                <li key={doc.id} className="px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">{doc.filename}</p>
-                    <p className="mt-0.5 text-sm text-zinc-600">
-                      {formatBytes(doc.sizeBytes)} — uploaded {formatDate(doc.createdAt)}
-                    </p>
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={downloadingId === doc.id}
-                      onClick={() => void onDownload(doc)}
-                      className="rounded-md border border-zinc-300 px-3 py-1 text-sm hover:bg-zinc-100 disabled:opacity-50"
-                    >
-                      {downloadingId === doc.id ? "Preparing…" : "Download"}
-                    </button>
-                    {confirmDeleteId === doc.id ? (
-                      <>
-                        <button
-                          type="button"
-                          disabled={deletingId === doc.id}
-                          onClick={() => void onDelete(doc)}
-                          className="rounded-md bg-red-700 px-3 py-1 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50"
-                        >
-                          {deletingId === doc.id ? "Deleting…" : "Confirm delete"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteId(null)}
-                          className="rounded-md border border-zinc-300 px-3 py-1 text-sm hover:bg-zinc-100"
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActionError(null);
-                          setConfirmDeleteId(doc.id);
-                        }}
-                        className="rounded-md border border-zinc-300 px-3 py-1 text-sm hover:bg-zinc-100"
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ))}
-        {actionError !== null && (
-          <p className="mt-2 text-sm text-red-700" role="alert">
-            {actionError}
-          </p>
-        )}
-      </section>
-
-      <section aria-label="Upload documents" className="mt-10">
-        <h2 className="text-lg font-semibold">Upload PDFs</h2>
-        <p className="mt-1 text-sm text-zinc-600">
-          PDF files only, up to {MAX_PDF_MB} MB each.
+        </div>
+      )}
+      {matterError !== null && (
+        <p className="mt-2 text-sm text-red-700" role="alert">
+          {matterError}
         </p>
-        <input
-          type="file"
-          accept="application/pdf,.pdf"
-          multiple
-          onChange={onFilesSelected}
-          aria-label="Choose PDF files to upload"
-          className="mt-3 block w-full text-sm"
-        />
+      )}
+
+      <Section
+        label="Documents"
+        description={`PDF files only, up to ${MAX_PDF_MB} MB each. Text extraction and analysis start automatically after upload. Open a document to follow its progress and review its findings.`}
+        action={
+          uploadReady ? (
+            <label className="inline-block cursor-pointer rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-700 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-blue-800">
+              Upload PDFs
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                multiple
+                onChange={onFilesSelected}
+                aria-label="Choose PDF files to upload"
+                className="sr-only"
+              />
+            </label>
+          ) : undefined
+        }
+      >
         {uploads.length > 0 && (
-          <ul className="mt-3 space-y-2" aria-label="Upload progress">
+          <ul className="mb-4 space-y-2" aria-label="Upload progress">
             {uploads.map((upload) => (
               <li
                 key={upload.key}
-                className="rounded-md border border-zinc-200 px-3 py-2 text-sm"
+                className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
               >
-                <p className="truncate font-medium">{upload.filename}</p>
-                <p className="mt-0.5 text-zinc-600">
+                <p className="truncate font-medium text-slate-900">{upload.filename}</p>
+                <p className="mt-0.5 text-slate-600">
                   {upload.phase === "uploading"
                     ? `Uploading… ${upload.progress}%`
                     : upload.phase === "done"
@@ -340,14 +663,14 @@ export default function MatterDetailPage() {
                 </p>
                 {upload.phase === "uploading" && (
                   <div
-                    className="mt-1 h-1.5 w-full rounded bg-zinc-200"
+                    className="mt-1 h-1.5 w-full rounded bg-slate-200"
                     role="progressbar"
                     aria-valuenow={upload.progress}
                     aria-valuemin={0}
                     aria-valuemax={100}
                   >
                     <div
-                      className="h-1.5 rounded bg-zinc-900"
+                      className="h-1.5 rounded bg-slate-900"
                       style={{ width: `${upload.progress}%` }}
                     />
                   </div>
@@ -361,7 +684,263 @@ export default function MatterDetailPage() {
             ))}
           </ul>
         )}
-      </section>
+        {docs.status === "loading" && <LoadingLine>Loading documents…</LoadingLine>}
+        {docs.status === "error" && (
+          <ErrorBlock
+            message={docs.message}
+            onRetry={uploadReady ? () => reloadDocs(API_URL, matterId) : undefined}
+          />
+        )}
+        {docs.status === "ready" &&
+          (docs.value.length === 0 ? (
+            <EmptyState
+              title="No documents yet"
+              body="Upload the deal PDFs under review. Text is extracted per document so findings can cite exact evidence."
+            />
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+              <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
+                    <th scope="col" className="px-4 py-2.5 font-medium">
+                      Document
+                    </th>
+                    <th scope="col" className="w-24 px-4 py-2.5 text-right font-medium">
+                      Size
+                    </th>
+                    <th scope="col" className="w-32 px-4 py-2.5 font-medium">
+                      Uploaded
+                    </th>
+                    <th scope="col" className="w-44 px-4 py-2.5 font-medium">
+                      Status
+                    </th>
+                    <th scope="col" className="w-56 px-4 py-2.5 text-right font-medium">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {docs.value.map((doc) => {
+                    const run = runForDoc(doc.id);
+                    const active = run !== undefined && isActiveProcessingStage(run.stage);
+                    // A stale active run is abandoned: the backend resumes it
+                    // on retry (or the recovery sweep picks it up), and allows
+                    // deletion since no live driver owns it anymore.
+                    const stale = run !== undefined && isStaleActiveRun(run);
+                    const deleteBlocked = active && !stale;
+                    const analysis = analysisForDoc(doc.id);
+                    const summary = findingsSummary(findingsForDoc(doc.id));
+                    const showRowProgress =
+                      active &&
+                      (run?.stage === "analyzing" || run?.stage === "validating") &&
+                      analysis?.status === "running" &&
+                      (analysis.sectionsTotal ?? 0) > 0;
+                    return (
+                      <tr
+                        key={doc.id}
+                        id={`doc-${doc.id}`}
+                        className="scroll-mt-20 align-top hover:bg-slate-50"
+                      >
+                        <td className="max-w-0 px-4 py-3">
+                          <p className="truncate font-medium text-slate-900" title={doc.filename}>
+                            <Link
+                              href={`/matters/${matterId}/docs/${doc.id}`}
+                              className="rounded text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                            >
+                              {doc.filename}
+                            </Link>
+                          </p>
+                          {summary !== null ? (
+                            <p className="mt-0.5 text-[13px]">
+                              <Link
+                                href={`/matters/${matterId}/docs/${doc.id}`}
+                                className="rounded text-slate-600 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                              >
+                                {summary}
+                              </Link>
+                            </p>
+                          ) : (
+                            run === undefined && (
+                              <p className="mt-0.5 text-[13px] text-slate-500">Not analyzed yet</p>
+                            )
+                          )}
+                          {run?.stage === "failed" ? (
+                            <p className="mt-0.5 truncate text-[13px] text-red-700" role="alert">
+                              {processingErrorMessage(run.error)}
+                            </p>
+                          ) : (
+                            <>
+                              {doc.extractionStatus === "failed" && (
+                                <p
+                                  className="mt-0.5 truncate text-[13px] text-red-700"
+                                  role="alert"
+                                >
+                                  {extractionErrorMessage(doc.extractionError)}
+                                </p>
+                              )}
+                              {doc.extractionStatus === "no_text" && (
+                                <p className="mt-0.5 text-[13px] text-slate-600">
+                                  No text layer
+                                  {doc.pageCount !== undefined ? ` · ${doc.pageCount} pages` : ""}
+                                </p>
+                              )}
+                            </>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-right text-[13px] tabular-nums text-slate-600">
+                          {formatBytes(doc.sizeBytes)}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-[13px] tabular-nums text-slate-600">
+                          {formatDate(doc.createdAt)}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3">
+                          {run === undefined ? (
+                            <>
+                              <Badge tone={EXTRACTION_TONE[doc.extractionStatus]}>
+                                {EXTRACTION_STATUS_LABELS[doc.extractionStatus]}
+                              </Badge>
+                              {doc.extractionStatus === "completed" &&
+                                doc.pageCount !== undefined && (
+                                  <p className="mt-1 text-xs tabular-nums text-slate-500">
+                                    {doc.pageCount} {doc.pageCount === 1 ? "page" : "pages"}
+                                  </p>
+                                )}
+                            </>
+                          ) : (
+                            <>
+                              <Badge tone={PROCESSING_TONE[run.stage]}>
+                                {PROCESSING_STAGE_LABELS[run.stage]}
+                              </Badge>
+                              {(run.stage === "completed" ||
+                                run.stage === "completed_with_limits") &&
+                                doc.pageCount !== undefined && (
+                                  <p className="mt-1 text-xs tabular-nums text-slate-500">
+                                    {doc.pageCount} {doc.pageCount === 1 ? "page" : "pages"}
+                                  </p>
+                                )}
+                              {showRowProgress && analysis?.sectionsTotal !== undefined && (
+                                <div className="mt-1.5 w-36">
+                                  <ProgressBar
+                                    value={analysis.sectionsAnalyzed ?? 0}
+                                    max={analysis.sectionsTotal}
+                                    label={`Analyzed ${analysis.sectionsAnalyzed ?? 0} of ${analysis.sectionsTotal} sections`}
+                                  />
+                                  <p className="mt-0.5 text-xs tabular-nums text-slate-500">
+                                    Section {analysis.sectionsAnalyzed ?? 0} of{" "}
+                                    {analysis.sectionsTotal}
+                                  </p>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-right">
+                          <div className="flex flex-wrap justify-end gap-x-3 gap-y-1 text-[13px] font-medium">
+                            <Link
+                              href={`/matters/${matterId}/docs/${doc.id}`}
+                              className="rounded text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                            >
+                              Open
+                            </Link>
+                            <button
+                              type="button"
+                              disabled={downloadingId === doc.id}
+                              onClick={() => void onDownload(doc)}
+                              className="rounded text-blue-800 hover:text-blue-900 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                            >
+                              {downloadingId === doc.id ? "Preparing…" : "Download"}
+                            </button>
+                            {(run?.stage === "failed" || stale) && (
+                              <button
+                                type="button"
+                                disabled={retryingId === doc.id}
+                                onClick={() => void onRetry(doc)}
+                                className="rounded text-blue-800 hover:text-blue-900 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                              >
+                                {retryingId === doc.id ? "Retrying…" : "Retry"}
+                              </button>
+                            )}
+                            {confirmDeleteId === doc.id ? (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={deletingId === doc.id}
+                                  onClick={() => void onDelete(doc)}
+                                  className="rounded font-semibold text-red-700 hover:text-red-800 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                                >
+                                  {deletingId === doc.id ? "Deleting…" : "Confirm"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="rounded text-slate-600 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                                >
+                                  Cancel
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={deleteBlocked}
+                                title={
+                                  deleteBlocked
+                                    ? "Deletion is paused while this document is processing."
+                                    : undefined
+                                }
+                                onClick={() => {
+                                  setActionError(null);
+                                  setConfirmDeleteId(doc.id);
+                                }}
+                                className="rounded text-slate-600 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                          {deleteBlocked && (
+                            <p className="mt-1 text-xs text-slate-500">
+                              Deletion is paused while processing.
+                            </p>
+                          )}
+                          {stale && (
+                            <p className="mt-1 text-xs text-amber-700">
+                              Taking longer than usual — retry resumes it.
+                            </p>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        {actionError !== null && (
+          <p className="mt-2 text-sm text-red-700" role="alert">
+            {actionError}
+          </p>
+        )}
+      </Section>
+
+      {notice !== null && (
+        <Toast
+          key={notice.key}
+          tone={notice.ok ? "success" : "danger"}
+          title={notice.ok ? "Analysis complete" : "Analysis couldn't finish"}
+          body={
+            notice.ok
+              ? `${notice.filename} is ready to review.`
+              : `${notice.filename} needs attention — retry from its page.`
+          }
+          actionLabel={notice.ok ? "View results" : "Open document"}
+          onAction={() => {
+            const target = notice.docId;
+            dismissNotice();
+            router.push(`/matters/${matterId}/docs/${target}`);
+          }}
+          onDismiss={dismissNotice}
+        />
+      )}
     </main>
   );
 }

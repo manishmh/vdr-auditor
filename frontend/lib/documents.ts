@@ -1,4 +1,14 @@
-import { MattersApiError, requestJson } from "./matters";
+import { MattersApiError, expectArray, requestJson } from "./matters";
+
+export type DocumentExtractionStatus =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "no_text"
+  | "failed";
+
+/** Must match the backend PAGE_SEPARATOR: splits extracted text into pages. */
+export const PAGE_SEPARATOR = "\u000c";
 
 export interface MatterDocument {
   id: string;
@@ -8,15 +18,41 @@ export interface MatterDocument {
   sizeBytes: number;
   createdAt: string;
   updatedAt: string;
+  extractionStatus: DocumentExtractionStatus;
+  extractedText?: string;
+  pageCount?: number;
+  extractedAt?: string;
+  extractionError?: string;
+}
+
+export const EXTRACTION_STATUS_LABELS: Record<DocumentExtractionStatus, string> = {
+  pending: "Not extracted",
+  processing: "Extracting",
+  completed: "Text extracted",
+  no_text: "No extractable text",
+  failed: "Extraction failed",
+};
+
+export function extractionErrorMessage(code: string | undefined): string {
+  switch (code) {
+    case "encrypted":
+      return "This PDF is password-protected and cannot be read.";
+    case "limit_exceeded":
+      return "This PDF exceeds extraction limits.";
+    case "unparseable":
+      return "This PDF could not be read.";
+    default:
+      return "Extraction failed.";
+  }
 }
 
 export async function listDocuments(
   apiUrl: string,
   matterId: string,
 ): Promise<MatterDocument[]> {
-  return requestJson<MatterDocument[]>(
-    apiUrl,
-    `/api/matters/${matterId}/documents`,
+  return expectArray<MatterDocument>(
+    await requestJson<unknown>(apiUrl, `/api/matters/${matterId}/documents`),
+    "documents",
   );
 }
 
@@ -43,19 +79,29 @@ export function uploadDocument(
     xhr.onload = () => {
       if (xhr.status === 201) {
         try {
-          resolve(JSON.parse(xhr.responseText) as MatterDocument);
+          const body = JSON.parse(xhr.responseText) as
+            | { document?: unknown }
+            | MatterDocument;
+          const document =
+            "document" in body && typeof body.document === "object" && body.document !== null
+              ? (body.document as MatterDocument)
+              : (body as MatterDocument);
+          if (typeof document.id !== "string" || document.id === "") {
+            throw new Error("invalid upload response");
+          }
+          resolve(document);
         } catch {
-          reject(new MattersApiError("Upload succeeded but the response was invalid."));
+          reject(new MattersApiError("The upload finished but we couldn't confirm it. Please refresh and check."));
         }
         return;
       }
       reject(uploadError(xhr.status, xhr.responseText));
     };
     xhr.onerror = () => {
-      reject(new MattersApiError("Upload failed. Check your connection and retry."));
+      reject(new MattersApiError("The upload failed. Check your connection and try again."));
     };
     xhr.ontimeout = () => {
-      reject(new MattersApiError("Upload timed out. Try again."));
+      reject(new MattersApiError("The upload is taking too long. Please try again."));
     };
     xhr.timeout = 120000;
     xhr.send(file);
@@ -66,24 +112,33 @@ function uploadError(httpStatus: number, responseText: string): MattersApiError 
   try {
     const body = JSON.parse(responseText) as {
       error?: unknown;
-      message?: unknown;
-      issues?: Array<{ message?: unknown }>;
+      issues?: Array<{ code?: unknown }>;
     };
-    if (typeof body.message === "string") {
-      return new MattersApiError(body.message, httpStatus);
+    if (body.error === "file_too_large") {
+      return new MattersApiError(
+        "That file is too large. Please choose a smaller PDF.",
+        httpStatus,
+      );
     }
     if (body.error === "validation_error" && Array.isArray(body.issues)) {
-      const parts = body.issues
-        .map((issue) => issue.message)
-        .filter((message): message is string => typeof message === "string");
-      if (parts.length > 0) {
-        return new MattersApiError(parts.join(" "), httpStatus);
-      }
+      const tooLarge = body.issues.some((issue) => issue.code === "file_too_large");
+      return new MattersApiError(
+        tooLarge
+          ? "That file is too large. Please choose a smaller PDF."
+          : "That file isn't a valid PDF. Please choose another file.",
+        httpStatus,
+      );
+    }
+    if (body.error === "matter_not_found" || body.error === "not_found") {
+      return new MattersApiError(
+        "We couldn't find that matter. It may have been deleted.",
+        httpStatus,
+      );
     }
   } catch {
     // Fall through to the generic message below.
   }
-  return new MattersApiError(`Upload failed (HTTP ${httpStatus}).`, httpStatus);
+  return new MattersApiError("The upload failed. Please try again.", httpStatus);
 }
 
 export async function downloadDocument(
@@ -99,21 +154,17 @@ export async function downloadDocument(
     });
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === "TimeoutError") {
-      throw new MattersApiError("Download timed out. Try again.");
+      throw new MattersApiError("The download is taking too long. Please try again.");
     }
-    throw new MattersApiError("Cannot reach the backend. Is it running?");
+    throw new MattersApiError("We can't reach the server. Check your connection and try again.");
   }
   if (!res.ok) {
-    let message = `Download failed (HTTP ${res.status}).`;
-    try {
-      const body = (await res.json()) as { message?: unknown };
-      if (typeof body.message === "string") {
-        message = body.message;
-      }
-    } catch {
-      // Keep the generic message.
-    }
-    throw new MattersApiError(message, res.status);
+    throw new MattersApiError(
+      res.status === 404
+        ? "That document is no longer available. It may have been deleted."
+        : "Couldn't download this file. Please try again.",
+      res.status,
+    );
   }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
@@ -128,6 +179,18 @@ export async function downloadDocument(
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+export async function extractDocument(
+  apiUrl: string,
+  matterId: string,
+  docId: string,
+): Promise<MatterDocument> {
+  return requestJson<MatterDocument>(
+    apiUrl,
+    `/api/matters/${matterId}/documents/${docId}/extract`,
+    { method: "POST" },
+  );
 }
 
 export async function deleteDocument(
