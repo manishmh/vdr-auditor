@@ -25,7 +25,42 @@ export const MATTER_STATUS_LABELS: Record<MatterStatus, string> = {
   completed: "Completed",
 };
 
-const REQUEST_TIMEOUT_MS = 10000;
+/**
+ * Client request budget. The server answers within ~8s even when its database
+ * hangs, so this mostly covers cold serverless boots and slow networks. One
+ * attempt only: automatic retries would double the load exactly when the
+ * backend is slowest, and the UI already offers explicit retry.
+ */
+const REQUEST_TIMEOUT_MS = 25000;
+
+/** How long cached GETs stay valid. Live collections are never cached. */
+const GET_CACHE_TTL_MS = 30_000;
+const GET_CACHE_MAX_ENTRIES = 50;
+const getCache = new Map<string, { at: number; value: unknown }>();
+const inflightGets = new Map<string, Promise<unknown>>();
+
+/** Drop everything cached. Called automatically after any write. */
+export function bustApiCache(): void {
+  getCache.clear();
+}
+
+/**
+ * GETs stable enough to cache briefly: the matters list, one matter, and a
+ * matter's document list. Analyses, findings, runs, and history change under
+ * polling and always read live.
+ */
+function isCacheableGet(path: string): boolean {
+  return (
+    path === "/api/matters" ||
+    /^\/api\/matters\/[^/]+$/.test(path) ||
+    /^\/api\/matters\/[^/]+\/documents$/.test(path)
+  );
+}
+
+export interface RequestOptions {
+  /** Skip the cache and force a network read (polls, transitions, actions). */
+  fresh?: boolean;
+}
 
 export class MattersApiError extends Error {
   readonly httpStatus: number | undefined;
@@ -146,36 +181,70 @@ export async function requestJson<T>(
   path: string,
   init?: RequestInit,
   timeoutMs: number = REQUEST_TIMEOUT_MS,
+  options: RequestOptions = {},
 ): Promise<T> {
-  // Reads retry once on timeout: the first attempt often warms a cold
-  // serverless instance, so the immediate retry lands warm and succeeds.
-  // Writes never retry here — a blind POST/PATCH/DELETE retry could apply
-  // the same change twice.
-  const idempotent =
-    init === undefined ||
-    init.method === undefined ||
-    init.method === "GET" ||
-    init.method === "HEAD";
-  let res: Response;
-  let retried = false;
-  for (;;) {
-    try {
-      res = await fetch(`${apiUrl}${path}`, {
-        ...init,
-        signal: AbortSignal.timeout(timeoutMs),
-        cache: "no-store",
-      });
-      break;
-    } catch (err: unknown) {
-      if (idempotent && !retried && err instanceof DOMException && err.name === "TimeoutError") {
-        retried = true;
-        continue;
-      }
-      logApiFailure(path, {
-        reason: err instanceof DOMException ? err.name : "network-error",
-      });
-      throw toNetworkError(err);
+  const method = init?.method ?? "GET";
+  const key = `${method} ${apiUrl}${path}`;
+  const readable = method === "GET" || method === "HEAD";
+  if (!readable) {
+    // Writes invalidate everything cached; simpler and safer than per-URL rules.
+    bustApiCache();
+    return fetchJson<T>(apiUrl, path, init, timeoutMs);
+  }
+  if (isCacheableGet(path) && options.fresh !== true) {
+    const hit = getCache.get(key);
+    if (hit !== undefined && Date.now() - hit.at < GET_CACHE_TTL_MS) {
+      return structuredClone(hit.value) as T;
     }
+    getCache.delete(key);
+  }
+  // Concurrent identical reads share one request instead of stacking.
+  const pending = inflightGets.get(key);
+  if (pending !== undefined) {
+    return pending.then((value) => structuredClone(value) as T);
+  }
+  const task = fetchJson<T>(apiUrl, path, init, timeoutMs);
+  inflightGets.set(key, task);
+  const outcome = task.then(
+    (value) => {
+      inflightGets.delete(key);
+      if (isCacheableGet(path) && options.fresh !== true) {
+        if (getCache.size >= GET_CACHE_MAX_ENTRIES && !getCache.has(key)) {
+          const oldest = getCache.keys().next();
+          if (!oldest.done) {
+            getCache.delete(oldest.value);
+          }
+        }
+        getCache.set(key, { at: Date.now(), value: structuredClone(value) });
+      }
+      return value;
+    },
+    (err: unknown) => {
+      inflightGets.delete(key);
+      throw err;
+    },
+  );
+  return outcome;
+}
+
+async function fetchJson<T>(
+  apiUrl: string,
+  path: string,
+  init: RequestInit | undefined,
+  timeoutMs: number,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${apiUrl}${path}`, {
+      ...init,
+      signal: AbortSignal.timeout(timeoutMs),
+      cache: "no-store",
+    });
+  } catch (err: unknown) {
+    logApiFailure(path, {
+      reason: err instanceof DOMException ? err.name : "network-error",
+    });
+    throw toNetworkError(err);
   }
   if (res.status === 204) {
     return undefined as T;
@@ -221,13 +290,23 @@ export function expectObject<T extends object>(value: unknown, what: string): T 
   return value as T;
 }
 
-export async function listMatters(apiUrl: string): Promise<Matter[]> {
-  return expectArray<Matter>(await requestJson<unknown>(apiUrl, "/api/matters"), "matters");
+export async function listMatters(
+  apiUrl: string,
+  options: RequestOptions = {},
+): Promise<Matter[]> {
+  return expectArray<Matter>(
+    await requestJson<unknown>(apiUrl, "/api/matters", undefined, REQUEST_TIMEOUT_MS, options),
+    "matters",
+  );
 }
 
-export async function getMatter(apiUrl: string, id: string): Promise<Matter> {
+export async function getMatter(
+  apiUrl: string,
+  id: string,
+  options: RequestOptions = {},
+): Promise<Matter> {
   return expectObject<Matter>(
-    await requestJson<unknown>(apiUrl, `/api/matters/${id}`),
+    await requestJson<unknown>(apiUrl, `/api/matters/${id}`, undefined, REQUEST_TIMEOUT_MS, options),
     "this matter",
   );
 }

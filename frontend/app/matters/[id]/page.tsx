@@ -208,7 +208,9 @@ export default function MatterDetailPage() {
       setAnalyses({ status: "loading" });
       setFindings({ status: "loading" });
     }
-    listDocuments(apiUrl, id).then(
+    // Silent refetches follow live transitions, so they bypass the cache;
+    // only the initial load may serve cached documents.
+    listDocuments(apiUrl, id, { fresh: silent }).then(
       (documents) => {
         setDocs({ status: "ready", value: documents });
       },

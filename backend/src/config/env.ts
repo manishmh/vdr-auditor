@@ -37,6 +37,15 @@ function missing(name: string): Error {
  * safe to log; never include secret values in error messages.
  */
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
+  const nodeMajor = Number.parseInt((process.versions.node.split(".")[0] ?? "").trim(), 10);
+  if (!Number.isInteger(nodeMajor) || nodeMajor < 22) {
+    // pdfjs-dist requires Node >=22.13; on older runtimes PDF parsing throws
+    // at extraction time and every document fails as unparseable. Fail loud
+    // at boot instead of serving a broken extractor.
+    throw new Error(
+      `Invalid runtime: this backend requires Node.js 22 or newer (running on ${process.versions.node}).`,
+    );
+  }
   const frontendOrigin = source["FRONTEND_ORIGIN"];
   if (frontendOrigin === undefined || frontendOrigin === "") {
     throw missing("FRONTEND_ORIGIN");

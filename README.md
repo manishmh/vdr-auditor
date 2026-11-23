@@ -15,7 +15,7 @@ vdr-auditor/
 
 ## Prerequisites
 
-- Node.js 20+ and npm.
+- Node.js 22+ and npm. The backend pins `engines: 22.x` because pdfjs-dist requires Node ≥22.13; older runtimes fail every PDF extraction as `unparseable`, and the backend refuses to boot on them.
 - A MongoDB Atlas cluster (only needed for the readiness check; see below).
   Create the database user and IP allowlist entry in Atlas yourself — this repo
   contains no credentials and no seed data.

@@ -1,4 +1,10 @@
-import { MattersApiError, expectArray, requestJson } from "./matters";
+import {
+  MattersApiError,
+  bustApiCache,
+  expectArray,
+  requestJson,
+  type RequestOptions,
+} from "./matters";
 
 export type DocumentExtractionStatus =
   | "pending"
@@ -49,9 +55,16 @@ export function extractionErrorMessage(code: string | undefined): string {
 export async function listDocuments(
   apiUrl: string,
   matterId: string,
+  options: RequestOptions = {},
 ): Promise<MatterDocument[]> {
   return expectArray<MatterDocument>(
-    await requestJson<unknown>(apiUrl, `/api/matters/${matterId}/documents`),
+    await requestJson<unknown>(
+      apiUrl,
+      `/api/matters/${matterId}/documents`,
+      undefined,
+      undefined,
+      options,
+    ),
     "documents",
   );
 }
@@ -89,6 +102,8 @@ export function uploadDocument(
           if (typeof document.id !== "string" || document.id === "") {
             throw new Error("invalid upload response");
           }
+          // XHR uploads bypass requestJson, so bust the cache explicitly.
+          bustApiCache();
           resolve(document);
         } catch {
           reject(new MattersApiError("The upload finished but we couldn't confirm it. Please refresh and check."));

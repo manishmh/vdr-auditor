@@ -1,7 +1,4 @@
-import {
-  getDocument,
-  type PDFDocumentProxy,
-} from "pdfjs-dist/legacy/build/pdf.mjs";
+import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 /**
  * Minimal structural view of a loaded PDF, decoupled from the pdf.js API
@@ -29,6 +26,10 @@ export async function loadPdfDocument(bytes: Uint8Array): Promise<PdfDocumentLik
   // pdf.js requires a plain Uint8Array; a Node Buffer is rejected even
   // though it subclasses Uint8Array, so normalize with one copy.
   const data = new Uint8Array(bytes);
+  // Imported lazily: the pdf.js bundle is large, and most requests (health,
+  // lists, findings) never touch it. A static import would tax every cold
+  // serverless boot and spam every cold log with its warnings.
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const doc: PDFDocumentProxy = await getDocument({
     data,
     useWorkerFetch: false,

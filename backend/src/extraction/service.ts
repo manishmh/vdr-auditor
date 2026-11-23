@@ -34,6 +34,19 @@ function isPasswordError(err: unknown): boolean {
   );
 }
 
+/**
+ * One-line safe rendering of the underlying parser failure for server logs:
+ * error class plus truncated message. Parser messages are structural;
+ * truncated defensively regardless. Never document content.
+ */
+function describeCause(err: unknown): string {
+  if (err instanceof Error) {
+    const message = err.message.length > 200 ? `${err.message.slice(0, 200)}…` : err.message;
+    return `${err.name}: ${message}`;
+  }
+  return "unknown";
+}
+
 function itemText(item: unknown): string | undefined {
   if (typeof item !== "object" || item === null || !("str" in item)) {
     return undefined;
@@ -77,6 +90,7 @@ export async function extractPdfText(
   try {
     doc = await load(bytes);
   } catch (err: unknown) {
+    console.error(`extract pdf load failed (${describeCause(err)})`);
     return { ok: false, code: isPasswordError(err) ? "encrypted" : "unparseable" };
   }
 
@@ -92,7 +106,8 @@ export async function extractPdfText(
       try {
         const page = await doc.getPage(pageNumber);
         content = await page.getTextContent();
-      } catch {
+      } catch (err: unknown) {
+        console.error(`extract page ${pageNumber} failed (${describeCause(err)})`);
         return { ok: false, code: "unparseable" };
       }
       const parts: string[] = [];

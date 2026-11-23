@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { MattersApiError, requestJson } from "../../frontend/lib/matters.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// NOTE: filename predates the current behavior; this file covers timeout,
+// in-flight dedup, and caching for requestJson (single attempt, no retry).
+import { MattersApiError, bustApiCache, requestJson } from "../../frontend/lib/matters.js";
 
 // requestJson is pure TypeScript (fetch + DOMException only), so the backend
 // suite covers it until the frontend grows its own harness.
@@ -25,72 +27,96 @@ function jsonOk(body: unknown): Response {
   });
 }
 
+beforeEach(() => {
+  bustApiCache();
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
-describe("requestJson timeout retry", () => {
-  it("retries an idempotent GET once after a timeout", async () => {
+describe("requestJson timeout behavior", () => {
+  it("makes exactly one attempt on timeout", async () => {
     vi.useFakeTimers();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const fetchMock = vi.fn();
-    let calls = 0;
-    const hanging = hangingFetch();
-    fetchMock.mockImplementation((...args: unknown[]) => {
-      calls += 1;
-      return calls === 1
-        ? (hanging as (...a: unknown[]) => unknown)(...args)
-        : Promise.resolve(jsonOk({ ok: true }));
-    });
+    const fetchMock = hangingFetch();
     vi.stubGlobal("fetch", fetchMock);
-    const pending = requestJson<Record<string, unknown>>(API_URL, "/api/matters", undefined, 100);
-    const settled = pending.then(
-      (value) => ({ ok: true as const, value }),
-      (err: unknown) => ({ ok: false as const, err }),
-    );
-    await vi.advanceTimersByTimeAsync(150);
-    const result = await settled;
-    expect(result.ok).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("never retries writes", async () => {
-    vi.useFakeTimers();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.stubGlobal("fetch", hangingFetch());
-    const pending = requestJson(API_URL, "/api/matters", { method: "POST" }, 100);
+    const pending = requestJson(API_URL, "/api/matters", undefined, 100);
     const settled = pending.catch((err: unknown) => err);
     await vi.advanceTimersByTimeAsync(500);
     const err = await settled;
     expect(err).toBeInstanceOf(MattersApiError);
     expect((err as MattersApiError).message).toContain("taking longer than expected");
-  });
-
-  it("never retries HTTP errors", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const fetchMock = vi.fn(async () => new Response("{}", { status: 500 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const err = await requestJson(API_URL, "/api/matters").catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(MattersApiError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("gives up after the retry also times out", async () => {
-    vi.useFakeTimers();
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const fetchMock = hangingFetch();
+  it("shares one request between concurrent identical reads", async () => {
+    const fetchMock = vi.fn(async () => jsonOk([1]));
     vi.stubGlobal("fetch", fetchMock);
-    const pending = requestJson(API_URL, "/api/matters", undefined, 100);
-    const settled = pending.catch((err: unknown) => err);
-    await vi.advanceTimersByTimeAsync(150);
-    await vi.advanceTimersByTimeAsync(150);
-    const err = await settled;
-    expect(err).toBeInstanceOf(MattersApiError);
+    const [a, b] = await Promise.all([
+      requestJson(API_URL, "/api/matters"),
+      requestJson(API_URL, "/api/matters"),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(a).toEqual([1]);
+    expect(b).toEqual([1]);
+  });
+
+  it("serves stable GETs from cache until it expires", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => jsonOk([1]));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await requestJson(API_URL, "/api/matters")).toEqual([1]);
+    expect(await requestJson(API_URL, "/api/matters")).toEqual([1]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(await requestJson(API_URL, "/api/matters")).toEqual([1]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    // Exactly one diagnostic line for the final failure (plus shape info).
-    expect(errorSpy).toHaveBeenCalledTimes(1);
-    expect(String(errorSpy.mock.calls[0]?.[0])).toContain("vdr-api");
+  });
+
+  it("hands out copies so callers cannot corrupt the cache", async () => {
+    const fetchMock = vi.fn(async () => jsonOk({ items: [1] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const first = await requestJson<Record<string, unknown>>(API_URL, "/api/matters");
+    first["items"] = ["mutated"];
+    const second = await requestJson<Record<string, unknown>>(API_URL, "/api/matters");
+    expect(second).toEqual({ items: [1] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fresh reads and writes bypass or bust the cache", async () => {
+    const fetchMock = vi.fn(async () => jsonOk([1]));
+    vi.stubGlobal("fetch", fetchMock);
+    await requestJson(API_URL, "/api/matters");
+    await requestJson(API_URL, "/api/matters", undefined, undefined, { fresh: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await requestJson(API_URL, "/api/matters", { method: "POST" });
+    await requestJson(API_URL, "/api/matters");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("never caches live collections but still dedupes them", async () => {
+    const fetchMock = vi.fn(async () => jsonOk({ runs: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await requestJson(API_URL, "/api/processing");
+    await requestJson(API_URL, "/api/processing");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await Promise.all([
+      requestJson(API_URL, "/api/processing"),
+      requestJson(API_URL, "/api/processing"),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("never dedupes writes", async () => {
+    const fetchMock = vi.fn(async () => jsonOk({}));
+    vi.stubGlobal("fetch", fetchMock);
+    await Promise.all([
+      requestJson(API_URL, "/api/matters", { method: "POST" }),
+      requestJson(API_URL, "/api/matters", { method: "POST" }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
