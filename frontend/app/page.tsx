@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { formatDate } from "@/lib/format";
+import { useNavBusy } from "./components/useNavBusy";
 import {
   APP_CONFIG_ERROR_MESSAGE,
   MATTER_DESCRIPTION_MAX_LENGTH,
@@ -61,6 +62,9 @@ export default function MattersPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const { navBusy, guardNav } = useNavBusy();
+  const navClass = (base: string): string =>
+    navBusy ? `${base} pointer-events-none opacity-60` : base;
 
   const loadMatters = (apiUrl: string | undefined) => {
     setList({ status: "loading" });
@@ -307,7 +311,11 @@ export default function MattersPage() {
                       <td className="max-w-0 px-4 py-3">
                         <Link
                           href={`/matters/${matter.id}`}
-                          className="block truncate font-medium text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                          onClick={guardNav}
+                          aria-disabled={navBusy}
+                          className={navClass(
+                            "block truncate font-medium text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800",
+                          )}
                         >
                           {matter.title}
                         </Link>
@@ -330,7 +338,11 @@ export default function MattersPage() {
                           <Link
                             href={`/matters/${matter.id}`}
                             aria-label={`Open ${matter.title}`}
-                            className="rounded text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                            onClick={guardNav}
+                            aria-disabled={navBusy}
+                            className={navClass(
+                              "rounded text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800",
+                            )}
                           >
                             Open →
                           </Link>

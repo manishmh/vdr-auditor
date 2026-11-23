@@ -52,6 +52,7 @@ import {
   Toast,
   type BadgeTone,
 } from "../../components/ui";
+import { useNavBusy } from "../../components/useNavBusy";
 
 const API_URL = process.env["NEXT_PUBLIC_API_URL"];
 const MAX_PDF_MB = (() => {
@@ -192,6 +193,9 @@ export default function MatterDetailPage() {
     clearRedirect();
     setNotice(null);
   }, [clearRedirect]);
+  const { navBusy, guardNav } = useNavBusy();
+  const navClass = (base: string): string =>
+    navBusy ? `${base} pointer-events-none opacity-60` : base;
 
   /**
    * Refresh documents, analyses, findings, and processing runs together.
@@ -745,7 +749,11 @@ export default function MatterDetailPage() {
                           <p className="truncate font-medium text-slate-900" title={doc.filename}>
                             <Link
                               href={`/matters/${matterId}/docs/${doc.id}`}
-                              className="rounded text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                              onClick={guardNav}
+                              aria-disabled={navBusy}
+                              className={navClass(
+                                "rounded text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800",
+                              )}
                             >
                               {doc.filename}
                             </Link>
@@ -754,7 +762,11 @@ export default function MatterDetailPage() {
                             <p className="mt-0.5 text-[13px]">
                               <Link
                                 href={`/matters/${matterId}/docs/${doc.id}`}
-                                className="rounded text-slate-600 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                                onClick={guardNav}
+                                aria-disabled={navBusy}
+                                className={navClass(
+                                  "rounded text-slate-600 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800",
+                                )}
                               >
                                 {summary}
                               </Link>
@@ -838,7 +850,11 @@ export default function MatterDetailPage() {
                           <div className="flex flex-wrap justify-end gap-x-3 gap-y-1 text-[13px] font-medium">
                             <Link
                               href={`/matters/${matterId}/docs/${doc.id}`}
-                              className="rounded text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                              onClick={guardNav}
+                              aria-disabled={navBusy}
+                              className={navClass(
+                                "rounded text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800",
+                              )}
                             >
                               Open
                             </Link>

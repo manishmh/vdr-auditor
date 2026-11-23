@@ -1,6 +1,15 @@
 import { Db, MongoClient } from "mongodb";
 
 /**
+ * How long the driver waits for a usable database connection before failing.
+ * Must stay below the client's own request timeout so a hanging database
+ * (paused cluster, blocked network) surfaces as a fast 503 with a retry
+ * message instead of a blind client-side timeout. Success paths are
+ * unaffected.
+ */
+export const MONGO_SERVER_SELECTION_TIMEOUT_MS = 8000;
+
+/**
  * Shared MongoClient singleton. One client per process, safe for concurrent
  * requests and reused across warm Vercel function invocations. The client is
  * created lazily on first use so the server can boot and answer liveness
@@ -11,7 +20,9 @@ let clientUri: string | undefined;
 
 function getClient(uri: string): MongoClient {
   if (client === undefined || clientUri !== uri) {
-    client = new MongoClient(uri);
+    client = new MongoClient(uri, {
+      serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+    });
     clientUri = uri;
   }
   return client;

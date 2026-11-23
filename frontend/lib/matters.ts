@@ -147,18 +147,35 @@ export async function requestJson<T>(
   init?: RequestInit,
   timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
+  // Reads retry once on timeout: the first attempt often warms a cold
+  // serverless instance, so the immediate retry lands warm and succeeds.
+  // Writes never retry here — a blind POST/PATCH/DELETE retry could apply
+  // the same change twice.
+  const idempotent =
+    init === undefined ||
+    init.method === undefined ||
+    init.method === "GET" ||
+    init.method === "HEAD";
   let res: Response;
-  try {
-    res = await fetch(`${apiUrl}${path}`, {
-      ...init,
-      signal: AbortSignal.timeout(timeoutMs),
-      cache: "no-store",
-    });
-  } catch (err: unknown) {
-    logApiFailure(path, {
-      reason: err instanceof DOMException ? err.name : "network-error",
-    });
-    throw toNetworkError(err);
+  let retried = false;
+  for (;;) {
+    try {
+      res = await fetch(`${apiUrl}${path}`, {
+        ...init,
+        signal: AbortSignal.timeout(timeoutMs),
+        cache: "no-store",
+      });
+      break;
+    } catch (err: unknown) {
+      if (idempotent && !retried && err instanceof DOMException && err.name === "TimeoutError") {
+        retried = true;
+        continue;
+      }
+      logApiFailure(path, {
+        reason: err instanceof DOMException ? err.name : "network-error",
+      });
+      throw toNetworkError(err);
+    }
   }
   if (res.status === 204) {
     return undefined as T;
