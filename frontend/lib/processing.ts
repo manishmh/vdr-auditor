@@ -95,10 +95,55 @@ export async function retryProcessing(
   apiUrl: string,
   matterId: string,
   docId: string,
-): Promise<void> {
-  await requestJson<unknown>(apiUrl, `/api/matters/${matterId}/documents/${docId}/process`, {
-    method: "POST",
-  });
+): Promise<ProcessingRunSummary | null> {
+  const body = await requestJson<unknown>(
+    apiUrl,
+    `/api/matters/${matterId}/documents/${docId}/process`,
+    { method: "POST" },
+  );
+  if (typeof body !== "object" || body === null) {
+    return null;
+  }
+  return parseProcessingRunSummary((body as { run?: unknown }).run);
+}
+
+/**
+ * Validate a run summary from a mutation response before seeding UI state
+ * with it. Returns null when malformed so callers fall back to refetching.
+ */
+export function parseProcessingRunSummary(value: unknown): ProcessingRunSummary | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const stage = record["stage"];
+  if (
+    typeof record["id"] !== "string" ||
+    typeof record["matterId"] !== "string" ||
+    typeof record["docId"] !== "string" ||
+    typeof stage !== "string" ||
+    !(PROCESSING_STAGES as readonly string[]).includes(stage) ||
+    typeof record["updatedAt"] !== "string"
+  ) {
+    return null;
+  }
+  const summary: ProcessingRunSummary = {
+    id: record["id"],
+    matterId: record["matterId"],
+    docId: record["docId"],
+    stage: stage as ProcessingStage,
+    updatedAt: record["updatedAt"],
+  };
+  if (typeof record["error"] === "string") {
+    summary.error = record["error"];
+  }
+  if (typeof record["filename"] === "string") {
+    summary.filename = record["filename"];
+  }
+  if (typeof record["matterTitle"] === "string") {
+    summary.matterTitle = record["matterTitle"];
+  }
+  return summary;
 }
 
 /**

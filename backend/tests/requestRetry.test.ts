@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-// NOTE: filename predates the current behavior; this file covers timeout,
-// in-flight dedup, and caching for requestJson (single attempt, no retry).
+// NOTE: filename predates the current behavior; this file covers timeouts,
+// in-flight dedup, caching, and the single connection-failure retry for
+// requestJson (GETs retry once on TypeError only; timeouts never retry).
 import { MattersApiError, bustApiCache, requestJson } from "../../frontend/lib/matters.js";
 
 // requestJson is pure TypeScript (fetch + DOMException only), so the backend
@@ -118,5 +119,59 @@ describe("requestJson timeout behavior", () => {
       requestJson(API_URL, "/api/matters", { method: "POST" }),
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a failed GET connection once, then succeeds", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    fetchMock.mockResolvedValueOnce(jsonOk([1]));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await requestJson(API_URL, "/api/matters")).toEqual([1]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up after the retried connection also fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const err = await requestJson(API_URL, "/api/matters").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MattersApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain("Failed to fetch");
+  });
+
+  it("never attaches a post-mutation read to a pre-mutation request", async () => {
+    let release!: (value: unknown) => void;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(gate.then(() => jsonOk(["stale"])))
+      .mockImplementation(async () => jsonOk(["fresh"]));
+    vi.stubGlobal("fetch", fetchMock);
+    const beforeMutation = requestJson(API_URL, "/api/matters");
+    await requestJson(API_URL, "/api/matters", { method: "POST" });
+    const afterMutation = requestJson(API_URL, "/api/matters");
+    release(undefined);
+    expect(await afterMutation).toEqual(["fresh"]);
+    expect(await beforeMutation).toEqual(["stale"]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("never retries a failed write", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const err = await requestJson(API_URL, "/api/matters", { method: "POST" }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(MattersApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

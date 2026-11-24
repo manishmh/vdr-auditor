@@ -37,11 +37,18 @@ const REQUEST_TIMEOUT_MS = 25000;
 const GET_CACHE_TTL_MS = 30_000;
 const GET_CACHE_MAX_ENTRIES = 50;
 const getCache = new Map<string, { at: number; value: unknown }>();
-const inflightGets = new Map<string, Promise<unknown>>();
+/**
+ * Mutation epoch. Bumped on every bust so a refetch issued after a mutation
+ * never attaches to a request fired before it: without this, overlapping
+ * reads could adopt stale pre-mutation results.
+ */
+let dedupEpoch = 0;
+const inflightGets = new Map<string, { epoch: number; promise: Promise<unknown> }>();
 
 /** Drop everything cached. Called automatically after any write. */
 export function bustApiCache(): void {
   getCache.clear();
+  dedupEpoch += 1;
 }
 
 /**
@@ -200,14 +207,19 @@ export async function requestJson<T>(
   }
   // Concurrent identical reads share one request instead of stacking.
   const pending = inflightGets.get(key);
-  if (pending !== undefined) {
-    return pending.then((value) => structuredClone(value) as T);
+  if (pending !== undefined && pending.epoch === dedupEpoch) {
+    return pending.promise.then((value) => structuredClone(value) as T);
   }
   const task = fetchJson<T>(apiUrl, path, init, timeoutMs);
-  inflightGets.set(key, task);
+  inflightGets.set(key, { epoch: dedupEpoch, promise: task });
+  const forget = (): void => {
+    if (inflightGets.get(key)?.promise === task) {
+      inflightGets.delete(key);
+    }
+  };
   const outcome = task.then(
     (value) => {
-      inflightGets.delete(key);
+      forget();
       if (isCacheableGet(path) && options.fresh !== true) {
         if (getCache.size >= GET_CACHE_MAX_ENTRIES && !getCache.has(key)) {
           const oldest = getCache.keys().next();
@@ -220,11 +232,25 @@ export async function requestJson<T>(
       return value;
     },
     (err: unknown) => {
-      inflightGets.delete(key);
+      forget();
       throw err;
     },
   );
   return outcome;
+}
+
+function failureDetail(err: unknown): Record<string, string | number> {
+  if (err instanceof DOMException) {
+    return { reason: err.name };
+  }
+  if (err instanceof Error) {
+    // Fetch failure messages are browser-generated ("Failed to fetch") and
+    // carry no content; truncated defensively regardless.
+    const detail =
+      err.message.length > 80 ? `${err.message.slice(0, 80)}…` : err.message;
+    return { reason: "network-error", detail };
+  }
+  return { reason: "network-error" };
 }
 
 async function fetchJson<T>(
@@ -233,18 +259,29 @@ async function fetchJson<T>(
   init: RequestInit | undefined,
   timeoutMs: number,
 ): Promise<T> {
+  const method = init?.method ?? "GET";
+  const readable = method === "GET" || method === "HEAD";
   let res: Response;
-  try {
-    res = await fetch(`${apiUrl}${path}`, {
-      ...init,
-      signal: AbortSignal.timeout(timeoutMs),
-      cache: "no-store",
-    });
-  } catch (err: unknown) {
-    logApiFailure(path, {
-      reason: err instanceof DOMException ? err.name : "network-error",
-    });
-    throw toNetworkError(err);
+  let retried = false;
+  for (;;) {
+    try {
+      res = await fetch(`${apiUrl}${path}`, {
+        ...init,
+        signal: AbortSignal.timeout(timeoutMs),
+        cache: "no-store",
+      });
+      break;
+    } catch (err: unknown) {
+      // One silent retry when the connection itself fails before any
+      // response arrives. Timeouts deliberately do NOT retry: doubling slow
+      // requests piles load onto a struggling backend.
+      if (readable && !retried && err instanceof TypeError) {
+        retried = true;
+        continue;
+      }
+      logApiFailure(path, failureDetail(err));
+      throw toNetworkError(err);
+    }
   }
   if (res.status === 204) {
     return undefined as T;

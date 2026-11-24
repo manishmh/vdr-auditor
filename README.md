@@ -357,7 +357,13 @@ Notes:
   on a long-lived host (`node dist/server.js`), which sweeps
   automatically.
 - Health responses never include env values, credentials, stack traces, or
-  connection strings.
+  connection strings. Liveness reports the runtime Node version so a wrong
+  runtime is visible without backend access.
+- `backend/vercel.json` pins extra traced files into the serverless bundle:
+  pdf.js loads its worker (`pdf.worker.mjs`) through a dynamic import that
+  file tracing cannot see, so without the pin every extraction fails as
+  `unparseable` in production while working locally. Keep the pin when
+  upgrading pdfjs-dist.
 
 ## Scope boundary
 

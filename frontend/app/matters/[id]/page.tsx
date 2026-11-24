@@ -163,22 +163,28 @@ export default function MatterDetailPage() {
   const [confirmDeleteMatter, setConfirmDeleteMatter] = useState(false);
   const [deletingMatter, setDeletingMatter] = useState(false);
   const [matterError, setMatterError] = useState<string | null>(null);
-  // Guards the background poll: one runs-refresh in flight at most, and the
-  // last-seen runs signature so unchanged state never refetches documents,
-  // analyses, and findings (the documents payload carries full extracted
-  // text and is hundreds of kB per fetch).
+  // Guards the background poll: one refresh in flight at most, and the
+  // last-seen runs signature so unchanged state never refetches the heavy
+  // documents payload (full extracted text, hundreds of kB per fetch).
   const pollInFlight = useRef(false);
   const lastRunsSignature = useRef("");
   const [notice, setNotice] = useState<CompletionNotice | null>(null);
   // Documents uploaded in this session, watched for completion so the page
   // can announce and open their results. Older documents never trigger it.
   const watchIdsRef = useRef(new Map<string, string>());
-  const runsRef = useRef<ProcessingRunSummary[]>([]);
+  // Monotonic read generation: every loadAll stamps its fetches, and only
+  // the newest generation may apply state. A slow earlier read can no longer
+  // overwrite fresher state (e.g. an empty list landing after an upload).
+  const loadSeq = useRef(0);
+  const lastAppliedRuns = useRef<ProcessingRunSummary[]>([]);
   const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Fresh route, fresh tracking: never compare or notify across matters.
   useEffect(() => {
-    runsRef.current = runs;
-  });
+    watchIdsRef.current.clear();
+    lastAppliedRuns.current = [];
+    lastRunsSignature.current = "";
+  }, [matterId]);
 
   const clearRedirect = useCallback(() => {
     if (redirectTimer.current !== null) {
@@ -198,70 +204,147 @@ export default function MatterDetailPage() {
     navBusy ? `${base} pointer-events-none opacity-60` : base;
 
   /**
-   * Refresh documents, analyses, findings, and processing runs together.
+   * Refresh runs, analyses, documents, and findings. Reads are sequenced:
+   * only the newest loadAll may apply state, so overlapping reads can never
+   * regress the page (a slow pre-upload response landing after the upload).
    * Silent refreshes keep the last known state on transient failure so
    * background polling never flickers the page into an error state.
    */
-  const loadAll = useCallback((apiUrl: string, id: string, silent: boolean) => {
-    if (!silent) {
-      setDocs({ status: "loading" });
-      setAnalyses({ status: "loading" });
-      setFindings({ status: "loading" });
-    }
-    // Silent refetches follow live transitions, so they bypass the cache;
-    // only the initial load may serve cached documents.
-    listDocuments(apiUrl, id, { fresh: silent }).then(
-      (documents) => {
-        setDocs({ status: "ready", value: documents });
-      },
-      (err: unknown) => {
-        if (!silent) {
-          setDocs({
-            status: "error",
-            message: errorMessage(err, "Couldn't load documents. Please try again."),
-          });
-        }
-      },
-    );
-    listAnalyses(apiUrl, id).then(
-      (items) => {
-        setAnalyses({ status: "ready", value: items });
-      },
-      (err: unknown) => {
-        if (!silent) {
-          setAnalyses({
-            status: "error",
-            message: errorMessage(err, "Couldn't load analysis. Please try again."),
-          });
-        }
-      },
-    );
-    listFindings(apiUrl, id).then(
-      (items) => {
-        setFindings({ status: "ready", value: items });
-      },
-      (err: unknown) => {
-        if (!silent) {
-          setFindings({
-            status: "error",
-            message: errorMessage(err, "Couldn't load findings. Please try again."),
-          });
-        }
-      },
-    );
-    listProcessingRuns(apiUrl, id).then(
-      (all) => {
+  const loadAll = useCallback(
+    async (apiUrl: string, id: string, silent: boolean): Promise<void> => {
+      const seq = ++loadSeq.current;
+      const live = (): boolean => seq === loadSeq.current;
+      if (!silent) {
+        setDocs({ status: "loading" });
+        setAnalyses({ status: "loading" });
+        setFindings({ status: "loading" });
+      }
+      const applyRuns = (all: ProcessingRunSummary[]): void => {
         const latest = latestRunPerDoc(all);
+        for (const [docId, filename] of watchIdsRef.current) {
+          const was = lastAppliedRuns.current.find((item) => item.docId === docId);
+          const now = latest.find((item) => item.docId === docId);
+          // Completion = active before, terminal now. First sight of a
+          // terminal run also counts: watched ids are session uploads that
+          // necessarily went through active (a fast backend may finish
+          // before any poll observes the middle).
+          const completed =
+            now !== undefined &&
+            !isActiveProcessingStage(now.stage) &&
+            (was === undefined || isActiveProcessingStage(was.stage));
+          if (!completed) {
+            if (was !== undefined && now === undefined) {
+              watchIdsRef.current.delete(docId);
+            }
+            continue;
+          }
+          watchIdsRef.current.delete(docId);
+          const ok = now.stage === "completed" || now.stage === "completed_with_limits";
+          clearRedirect();
+          setNotice({ key: Date.now(), docId, filename, ok });
+          if (ok) {
+            redirectTimer.current = setTimeout(() => {
+              redirectTimer.current = null;
+              if (typeof document === "undefined" || !document.hidden) {
+                router.push(`/matters/${id}/docs/${docId}`);
+              }
+            }, NOTICE_REDIRECT_MS);
+          }
+        }
+        lastAppliedRuns.current = latest;
         lastRunsSignature.current = runsSignature(latest);
         setRuns(latest);
-      },
-      () => {
-        if (!silent) {
+      };
+      const applyDocs = (
+        result: PromiseSettledResult<MatterDocument[]>,
+      ): void => {
+        if (result.status === "fulfilled") {
+          setDocs({ status: "ready", value: result.value });
+        } else if (!silent) {
+          setDocs({
+            status: "error",
+            message: errorMessage(result.reason, "Couldn't load documents. Please try again."),
+          });
+        }
+      };
+      const applyAnalyses = (result: PromiseSettledResult<DocAnalysis[]>): void => {
+        if (result.status === "fulfilled") {
+          setAnalyses({ status: "ready", value: result.value });
+        } else if (!silent) {
+          setAnalyses({
+            status: "error",
+            message: errorMessage(result.reason, "Couldn't load analysis. Please try again."),
+          });
+        }
+      };
+      const applyFindings = (result: PromiseSettledResult<Finding[]>): void => {
+        if (result.status === "fulfilled") {
+          setFindings({ status: "ready", value: result.value });
+        } else if (!silent) {
+          setFindings({
+            status: "error",
+            message: errorMessage(result.reason, "Couldn't load findings. Please try again."),
+          });
+        }
+      };
+      if (!silent) {
+        // First load: everything in parallel for speed.
+        const [runsRes, analysesRes, docsRes, findingsRes] = await Promise.allSettled([
+          listProcessingRuns(apiUrl, id),
+          listAnalyses(apiUrl, id),
+          listDocuments(apiUrl, id),
+          listFindings(apiUrl, id),
+        ]);
+        if (!live()) {
+          return;
+        }
+        if (runsRes.status === "fulfilled") {
+          applyRuns(runsRes.value);
+        } else {
           setRuns([]);
         }
-      },
-    );
-  }, []);
+        applyAnalyses(analysesRes);
+        applyDocs(docsRes);
+        applyFindings(findingsRes);
+        return;
+      }
+      // Silent refresh: light collections first, heavy only on real change.
+      // Silent refetches bypass the cache; only the initial load may serve it.
+      const [runsRes, analysesRes] = await Promise.allSettled([
+        listProcessingRuns(apiUrl, id),
+        listAnalyses(apiUrl, id),
+      ]);
+      if (!live()) {
+        return;
+      }
+      let heavy = false;
+      if (runsRes.status === "fulfilled") {
+        heavy =
+          runsSignature(latestRunPerDoc(runsRes.value)) !== lastRunsSignature.current;
+        applyRuns(runsRes.value);
+      }
+      if (analysesRes.status === "fulfilled") {
+        setAnalyses({ status: "ready", value: analysesRes.value });
+      }
+      if (!heavy) {
+        return;
+      }
+      const [docsRes, findingsRes] = await Promise.allSettled([
+        listDocuments(apiUrl, id, { fresh: true }),
+        listFindings(apiUrl, id),
+      ]);
+      if (!live()) {
+        return;
+      }
+      if (docsRes.status === "fulfilled") {
+        setDocs({ status: "ready", value: docsRes.value });
+      }
+      if (findingsRes.status === "fulfilled") {
+        setFindings({ status: "ready", value: findingsRes.value });
+      }
+    },
+    [clearRedirect, router],
+  );
 
   useEffect(() => {
     if (matterId === "" || API_URL === undefined || API_URL === "") {
@@ -272,7 +355,7 @@ export default function MatterDetailPage() {
     getMatter(apiUrl, id).then(
       (value) => {
         setMatter({ status: "ready", value });
-        loadAll(apiUrl, id, false);
+        void loadAll(apiUrl, id, false);
       },
       (err: unknown) => {
         const message = errorMessage(err, "Couldn't load this matter. Please try again.");
@@ -287,11 +370,10 @@ export default function MatterDetailPage() {
   const hasActiveRuns = runs.some((run) => isActiveProcessingStage(run.stage));
 
   // Follow persisted processing state while anything runs here; the runs
-  // themselves live on the server, so refresh and navigation are safe. Each
-  // tick refetches only the two small collections (runs plus live analysis
-  // progress): the heavy collections reload only when a run's stage or
-  // timestamp actually changed. Ticks never overlap (responses slower than
-  // the interval used to pile up) and never fire for a hidden tab.
+  // themselves live on the server, so refresh and navigation are safe. Ticks
+  // funnel through the sequenced loadAll, which refetches the heavy
+  // collections only when a run actually changed. Ticks never overlap and
+  // never fire for a hidden tab.
   useEffect(() => {
     if (matterId === "" || API_URL === undefined || API_URL === "" || !hasActiveRuns) {
       return;
@@ -306,56 +388,7 @@ export default function MatterDetailPage() {
         return;
       }
       pollInFlight.current = true;
-      const runsDone = listProcessingRuns(apiUrl, id).then(
-        (all) => {
-          const latest = latestRunPerDoc(all);
-          setRuns(latest);
-          const signature = runsSignature(latest);
-          if (signature !== lastRunsSignature.current) {
-            lastRunsSignature.current = signature;
-            loadAll(apiUrl, id, true);
-          }
-          const previous = runsRef.current;
-          for (const [docId, filename] of watchIdsRef.current) {
-            const was = previous.find((item) => item.docId === docId);
-            const now = latest.find((item) => item.docId === docId);
-            if (
-              was === undefined ||
-              !isActiveProcessingStage(was.stage) ||
-              (now !== undefined && isActiveProcessingStage(now.stage))
-            ) {
-              continue;
-            }
-            watchIdsRef.current.delete(docId);
-            if (now === undefined) {
-              continue;
-            }
-            const ok = now.stage === "completed" || now.stage === "completed_with_limits";
-            clearRedirect();
-            setNotice({ key: Date.now(), docId, filename, ok });
-            if (ok) {
-              redirectTimer.current = setTimeout(() => {
-                redirectTimer.current = null;
-                if (typeof document === "undefined" || !document.hidden) {
-                  router.push(`/matters/${id}/docs/${docId}`);
-                }
-              }, NOTICE_REDIRECT_MS);
-            }
-          }
-        },
-        () => {
-          // Keep the last known state; the next tick retries.
-        },
-      );
-      const analysesDone = listAnalyses(apiUrl, id).then(
-        (items) => {
-          setAnalyses({ status: "ready", value: items });
-        },
-        () => {
-          // Progress simply waits for the next tick.
-        },
-      );
-      void Promise.all([runsDone, analysesDone]).finally(() => {
+      void loadAll(apiUrl, id, true).finally(() => {
         pollInFlight.current = false;
       });
     };
@@ -363,10 +396,10 @@ export default function MatterDetailPage() {
     return () => {
       clearInterval(timer);
     };
-  }, [matterId, hasActiveRuns, loadAll, clearRedirect, router]);
+  }, [matterId, hasActiveRuns, loadAll]);
 
   const reloadDocs = (apiUrl: string, id: string) => {
-    loadAll(apiUrl, id, false);
+    void loadAll(apiUrl, id, false);
   };
 
   const patchUpload = (key: number, patch: Partial<UploadState>) => {
@@ -377,16 +410,36 @@ export default function MatterDetailPage() {
     );
   };
 
+  const seedDocs = (seeded: MatterDocument[]): void => {
+    setDocs((prev) => {
+      if (prev.status !== "ready") {
+        return prev;
+      }
+      const ids = new Set(seeded.map((doc) => doc.id));
+      return {
+        status: "ready",
+        value: [...seeded, ...prev.value.filter((doc) => !ids.has(doc.id))],
+      };
+    });
+  };
+
+  const seedRuns = (seeded: ProcessingRunSummary[]): void => {
+    const merged = latestRunPerDoc([...seeded, ...lastAppliedRuns.current]);
+    lastAppliedRuns.current = merged;
+    lastRunsSignature.current = runsSignature(merged);
+    setRuns(merged);
+  };
+
   const runUpload = async (
     apiUrl: string,
     id: string,
     file: File,
     key: number,
-  ): Promise<MatterDocument | null> => {
+  ): Promise<void> => {
     const precheck = validatePdfFile(file, MAX_PDF_BYTES);
     if (precheck !== undefined) {
       patchUpload(key, { phase: "error", message: precheck });
-      return null;
+      return;
     }
     try {
       patchUpload(key, { phase: "uploading", progress: 0, message: null });
@@ -394,19 +447,22 @@ export default function MatterDetailPage() {
         patchUpload(key, { progress });
       });
       patchUpload(key, { phase: "done", progress: 100 });
-      // Upload schedules extraction + analysis on the server; pick up the
-      // new run immediately, wake the global indicator, and watch this
-      // document so its completion is announced.
-      watchIdsRef.current.set(uploaded.id, uploaded.filename);
-      loadAll(apiUrl, id, true);
+      // Upload schedules extraction + analysis on the server. Seed state
+      // from the response itself so the row and polling start correctly
+      // even before the follow-up fetch lands; then confirm from the server
+      // and wake the global indicator. Watch for the completion notice.
+      watchIdsRef.current.set(uploaded.document.id, uploaded.document.filename);
+      seedDocs([uploaded.document]);
+      if (uploaded.processing !== null) {
+        seedRuns([uploaded.processing]);
+      }
+      void loadAll(apiUrl, id, true);
       notifyProcessingChanged();
-      return uploaded;
     } catch (err: unknown) {
       patchUpload(key, {
         phase: "error",
         message: errorMessage(err, "The upload failed. Please try again."),
       });
-      return null;
     }
   };
 
@@ -470,12 +526,16 @@ export default function MatterDetailPage() {
     setRetryingId(doc.id);
     setActionError(null);
     try {
-      await retryProcessing(API_URL, matterId, doc.id);
-      loadAll(API_URL, matterId, true);
+      const run = await retryProcessing(API_URL, matterId, doc.id);
+      if (run !== null) {
+        seedRuns([run]);
+        watchIdsRef.current.set(doc.id, doc.filename);
+      }
+      void loadAll(API_URL, matterId, true);
       notifyProcessingChanged();
     } catch (err: unknown) {
       setActionError(errorMessage(err, "Couldn't restart processing. Please try again."));
-      loadAll(API_URL, matterId, true);
+      void loadAll(API_URL, matterId, true);
     } finally {
       setRetryingId(null);
     }
@@ -512,11 +572,12 @@ export default function MatterDetailPage() {
     try {
       await deleteDocument(API_URL, matterId, doc.id);
       setConfirmDeleteId(null);
-      loadAll(API_URL, matterId, true);
+      watchIdsRef.current.delete(doc.id);
+      void loadAll(API_URL, matterId, true);
       notifyProcessingChanged();
     } catch (err: unknown) {
       setActionError(errorMessage(err, "Couldn't delete this document. Please try again."));
-      loadAll(API_URL, matterId, true);
+      void loadAll(API_URL, matterId, true);
     } finally {
       setDeletingId(null);
     }

@@ -56,6 +56,7 @@ describe("GET /api/health", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body["service"]).toBe(SERVICE_NAME);
     expect(body["status"]).toBe("ok");
+    expect(body["node"]).toBe(process.versions.node);
     expect(Number.isNaN(Date.parse(body["timestamp"] as string))).toBe(false);
     expect(mockedPing).not.toHaveBeenCalled();
   });

@@ -15,11 +15,14 @@ function timestamp(): string {
 export function createHealthRouter(options: HealthRouterOptions): Router {
   const router = Router();
 
-  // Liveness: the process is running. Never touches the database.
+  // Liveness: the process is running. Never touches the database. The
+  // runtime version is operational metadata (like the service name): it
+  // proves which Node version a deployment actually runs on.
   router.get("/", (_req, res) => {
     res.status(200).json({
       service: SERVICE_NAME,
       status: "ok",
+      node: process.versions.node,
       timestamp: timestamp(),
     });
   });

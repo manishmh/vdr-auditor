@@ -5,6 +5,7 @@ import {
   requestJson,
   type RequestOptions,
 } from "./matters";
+import { parseProcessingRunSummary, type ProcessingRunSummary } from "./processing";
 
 export type DocumentExtractionStatus =
   | "pending"
@@ -73,12 +74,18 @@ export async function listDocuments(
  * POST raw PDF bytes to the backend with progress callbacks. Uses XHR
  * because fetch has no upload-progress events.
  */
+export interface UploadResult {
+  document: MatterDocument;
+  /** The run the server started, when present and well-formed. */
+  processing: ProcessingRunSummary | null;
+}
+
 export function uploadDocument(
   apiUrl: string,
   matterId: string,
   file: File,
   onProgress: (percent: number) => void,
-): Promise<MatterDocument> {
+): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${apiUrl}/api/matters/${matterId}/documents`);
@@ -93,7 +100,7 @@ export function uploadDocument(
       if (xhr.status === 201) {
         try {
           const body = JSON.parse(xhr.responseText) as
-            | { document?: unknown }
+            | { document?: unknown; processing?: unknown }
             | MatterDocument;
           const document =
             "document" in body && typeof body.document === "object" && body.document !== null
@@ -104,7 +111,11 @@ export function uploadDocument(
           }
           // XHR uploads bypass requestJson, so bust the cache explicitly.
           bustApiCache();
-          resolve(document);
+          resolve({
+            document,
+            processing:
+              "processing" in body ? parseProcessingRunSummary(body.processing) : null,
+          });
         } catch {
           reject(new MattersApiError("The upload finished but we couldn't confirm it. Please refresh and check."));
         }
