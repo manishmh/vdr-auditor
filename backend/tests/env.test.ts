@@ -92,4 +92,39 @@ describe("loadEnv", () => {
     });
     expect(env.mongodbUri).toBeUndefined();
   });
+
+  it("applies whole-document analysis defaults", () => {
+    const env = loadEnv({ FRONTEND_ORIGIN: "http://localhost:3000" });
+    expect(env.analysisSectionChars).toBe(12000);
+    expect(env.analysisMaxSections).toBe(200);
+    expect(env.analysisConcurrency).toBe(4);
+    expect(env.analysisMaxFindings).toBe(200);
+  });
+
+  it("reads analysis tuning", () => {
+    const env = loadEnv({
+      FRONTEND_ORIGIN: "http://localhost:3000",
+      ANALYSIS_SECTION_CHARS: "8000",
+      ANALYSIS_MAX_SECTIONS: "50",
+      ANALYSIS_CONCURRENCY: "2",
+      ANALYSIS_MAX_FINDINGS: "80",
+    });
+    expect(env.analysisSectionChars).toBe(8000);
+    expect(env.analysisMaxSections).toBe(50);
+    expect(env.analysisConcurrency).toBe(2);
+    expect(env.analysisMaxFindings).toBe(80);
+  });
+
+  it("rejects invalid analysis tuning by name", () => {
+    for (const vars of [
+      { ANALYSIS_SECTION_CHARS: "50" },
+      { ANALYSIS_MAX_SECTIONS: "0" },
+      { ANALYSIS_CONCURRENCY: "9" },
+      { ANALYSIS_MAX_FINDINGS: "5" },
+    ]) {
+      expect(() =>
+        loadEnv({ FRONTEND_ORIGIN: "http://localhost:3000", ...vars }),
+      ).toThrowError(/ANALYSIS_(SECTION_CHARS|MAX_SECTIONS|CONCURRENCY|MAX_FINDINGS)/);
+    }
+  });
 });

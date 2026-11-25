@@ -35,6 +35,7 @@ import {
   latestRunPerDoc,
   listProcessingRuns,
   notifyProcessingChanged,
+  notifyProcessingRuns,
   PROCESSING_STAGE_LABELS,
   processingErrorMessage,
   retryProcessing,
@@ -109,6 +110,8 @@ const PROCESSING_TONE: Record<ProcessingStage, BadgeTone> = {
 };
 
 const MATTER_POLL_MS = 4000;
+/** Backoff ceiling while runs sit unchanged; analysis takes minutes. */
+const MATTER_POLL_MAX_MS = 15000;
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
@@ -254,6 +257,9 @@ export default function MatterDetailPage() {
         lastAppliedRuns.current = latest;
         lastRunsSignature.current = runsSignature(latest);
         setRuns(latest);
+        // Let the global indicator reuse this fetch instead of polling the
+        // same runs itself a moment later.
+        notifyProcessingRuns(latest);
       };
       const applyDocs = (
         result: PromiseSettledResult<MatterDocument[]>,
@@ -372,29 +378,53 @@ export default function MatterDetailPage() {
   // Follow persisted processing state while anything runs here; the runs
   // themselves live on the server, so refresh and navigation are safe. Ticks
   // funnel through the sequenced loadAll, which refetches the heavy
-  // collections only when a run actually changed. Ticks never overlap and
-  // never fire for a hidden tab.
+  // collections only when a run actually changed. Ticks never overlap, never
+  // fire for a hidden tab, and back off while nothing changes: analysis runs
+  // for minutes per document, so a fixed 4s cadence would fire hundreds of
+  // requests per document for no new information.
   useEffect(() => {
     if (matterId === "" || API_URL === undefined || API_URL === "" || !hasActiveRuns) {
       return;
     }
     const apiUrl: string = API_URL;
     const id: string = matterId;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let quietTicks = 0;
+    const schedule = (delayMs: number): void => {
+      if (!stopped) {
+        timer = setTimeout(tick, delayMs);
+      }
+    };
     const tick = () => {
+      if (stopped) {
+        return;
+      }
       if (typeof document !== "undefined" && document.hidden) {
+        schedule(MATTER_POLL_MS);
         return;
       }
       if (pollInFlight.current) {
+        schedule(MATTER_POLL_MS);
         return;
       }
+      const before = lastRunsSignature.current;
       pollInFlight.current = true;
       void loadAll(apiUrl, id, true).finally(() => {
         pollInFlight.current = false;
+        if (stopped) {
+          return;
+        }
+        quietTicks = lastRunsSignature.current === before ? quietTicks + 1 : 0;
+        schedule(Math.min(MATTER_POLL_MS * 2 ** quietTicks, MATTER_POLL_MAX_MS));
       });
     };
-    const timer = setInterval(tick, MATTER_POLL_MS);
+    schedule(MATTER_POLL_MS);
     return () => {
-      clearInterval(timer);
+      stopped = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
     };
   }, [matterId, hasActiveRuns, loadAll]);
 

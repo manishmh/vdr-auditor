@@ -7,7 +7,9 @@ import {
   isActiveProcessingStage,
   latestRunPerDoc,
   listProcessingRuns,
+  parseProcessingRunsEvent,
   PROCESSING_CHANGED_EVENT,
+  PROCESSING_RUNS_EVENT,
   PROCESSING_STAGE_LABELS,
   type ProcessingRunSummary,
   type ProcessingStage,
@@ -15,7 +17,12 @@ import {
 import { Badge, type BadgeTone } from "./ui";
 
 const API_URL = process.env["NEXT_PUBLIC_API_URL"];
-const ACTIVE_POLL_MS = 5000;
+const ACTIVE_POLL_MS = 10000;
+/**
+ * After a page-level poll broadcasts its runs, the indicator trusts them for
+ * this long instead of firing its own duplicate request for the same data.
+ */
+const BROADCAST_FRESH_MS = 20000;
 /** Completed runs stay visible briefly; failures stay until dismissed. */
 const RECENT_TERMINAL_MS = 15 * 60 * 1000;
 const DISMISS_KEY = "vdr-dismissed-runs";
@@ -87,6 +94,8 @@ export default function ProcessingIndicator() {
   // of stacking concurrent requests.
   const refreshInFlight = useRef(false);
   const refreshQueued = useRef(false);
+  // Last time a page broadcast its freshly polled runs for reuse here.
+  const lastBroadcastAt = useRef(0);
 
   const storeRuns = useCallback((all: ProcessingRunSummary[]) => {
     setSnapshot({ at: Date.now(), runs: latestRunPerDoc(all) });
@@ -142,17 +151,53 @@ export default function ProcessingIndicator() {
     };
   }, [refresh]);
 
+  // Matter and document pages broadcast every poll result. Merge those runs
+  // (newest per document wins) so this indicator stays live without its own
+  // duplicate request while a page is already polling.
+  useEffect(() => {
+    const onRuns = (event: Event) => {
+      const broadcasted = parseProcessingRunsEvent(
+        (event as CustomEvent<unknown>).detail,
+      );
+      if (broadcasted === null) {
+        return;
+      }
+      lastBroadcastAt.current = Date.now();
+      setSnapshot((prev) => {
+        const merged = new Map<string, ProcessingRunSummary>();
+        for (const run of prev?.runs ?? []) {
+          merged.set(run.id, run);
+        }
+        for (const run of broadcasted) {
+          const existing = merged.get(run.id);
+          if (existing === undefined || existing.updatedAt <= run.updatedAt) {
+            merged.set(run.id, run);
+          }
+        }
+        return { at: Date.now(), runs: latestRunPerDoc([...merged.values()]) };
+      });
+    };
+    window.addEventListener(PROCESSING_RUNS_EVENT, onRuns);
+    return () => {
+      window.removeEventListener(PROCESSING_RUNS_EVENT, onRuns);
+    };
+  }, []);
+
   const hasActive =
     snapshot !== null && snapshot.runs.some((run) => isActiveProcessingStage(run.stage));
 
-  // Poll only while something is actually running, and never for a
-  // hidden tab.
+  // Poll only while something is actually running, never for a hidden
+  // tab, and never right after a page broadcast fresh runs: those already
+  // carry this matter's latest state.
   useEffect(() => {
     if (!hasActive) {
       return;
     }
     const timer = setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) {
+        return;
+      }
+      if (Date.now() - lastBroadcastAt.current < BROADCAST_FRESH_MS) {
         return;
       }
       refresh();

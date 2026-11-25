@@ -1,4 +1,5 @@
 import type { Collection, ObjectId } from "mongodb";
+import type { AnalysisSettings } from "../ai/analysis.js";
 import { runAnalysisJob } from "../ai/job.js";
 import type { MetaConfig } from "../ai/metaClient.js";
 import { getAnalysesCollections } from "../db/analyses.js";
@@ -53,6 +54,7 @@ export interface DriveOptions {
   mongodbUri: string;
   mongodbDbName: string;
   meta: MetaConfig | undefined;
+  analysis?: AnalysisSettings;
   budgetMs?: number;
   staleMs?: number;
   maxAttempts?: number;
@@ -423,6 +425,7 @@ async function runAnalysisStage(
     matterId: doc.matterId,
     docId: doc._id,
     deadlineMs,
+    ...(options.analysis !== undefined ? { analysis: options.analysis } : {}),
     // This driver holds the exclusive claim on the document's work, so any
     // running analysis run it finds is stale by construction: fail it as
     // interrupted instead of deadlocking against it.

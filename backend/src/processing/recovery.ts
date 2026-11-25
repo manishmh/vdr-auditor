@@ -1,3 +1,4 @@
+import type { AnalysisSettings } from "../ai/analysis.js";
 import type { MetaConfig } from "../ai/metaClient.js";
 import { getAnalysesCollections } from "../db/analyses.js";
 import { getProcessingRuns } from "../db/processing.js";
@@ -18,6 +19,7 @@ export interface RecoveryOptions {
   mongodbUri: string;
   mongodbDbName: string;
   meta: MetaConfig | undefined;
+  analysis?: AnalysisSettings;
   staleMs?: number;
   maxAgeMs?: number;
   maxAttempts?: number;
@@ -113,6 +115,7 @@ export async function recoverProcessingRuns(options: RecoveryOptions): Promise<R
         mongodbUri: options.mongodbUri,
         mongodbDbName: options.mongodbDbName,
         meta: options.meta,
+        ...(options.analysis !== undefined ? { analysis: options.analysis } : {}),
         ...(options.budgetMs !== undefined ? { budgetMs: options.budgetMs } : {}),
         ...(options.staleMs !== undefined ? { staleMs: options.staleMs } : {}),
         ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),

@@ -192,14 +192,16 @@ findings. Only documents with completed extraction are eligible.
   `null` when unmappable) was checked against that page's text — model
   page numbers are never trusted on their own. Unverifiable model output
   is dropped, never stored.
-- Long documents are analyzed in bounded paragraph-aware sections (6,000
-  chars, splits prefer clause headings, max 12 sections and 100 findings
-  per run). Sections are independent: one section's failure never
-  discards another's verified findings, and one malformed finding never
-  discards its valid siblings. Runs that cannot cover everything are
-  marked `limited` with explicit `limitations` instead of truncating
-  silently; an empty result counts as clean only when every section
-  completed.
+- Long documents are analyzed end to end in bounded paragraph-aware
+  sections (12,000 chars, splits prefer clause headings, up to 200
+  sections and 200 findings per run, 4 sections concurrently).
+  Sections are independent: one section's failure never discards
+  another's verified findings, and one malformed finding never discards
+  its valid siblings. Runs that cannot cover everything are marked
+  `limited` with explicit `limitations` instead of truncating silently;
+  an empty result counts as clean only when every section completed.
+  Tune with `ANALYSIS_SECTION_CHARS`, `ANALYSIS_MAX_SECTIONS`,
+  `ANALYSIS_CONCURRENCY`, `ANALYSIS_MAX_FINDINGS`.
 - Run lifecycle: `running` → `completed`, `limited`, or `failed`. One
   running run per document (409 otherwise). Failed runs never touch
   previous successful findings; deleting a document cascades its runs and
@@ -213,7 +215,7 @@ findings. Only documents with completed extraction are eligible.
   `META_MODEL_ID`, optional `META_BASE_URL` (https, default
   `https://api.meta.ai/v1`), `META_TIMEOUT_MS` (per-model-call budget,
   default 60000, respected as configured; long runs are bounded by the
-  section cap plus an overall run deadline instead),
+  section/findings caps plus an overall run deadline instead),
   `META_MAX_RETRIES` (0–5, 429/5xx/timeout/network only, honors
   `Retry-After`). Only provider parameters verified for the Meta
   endpoint are sent (`model`, `messages`, `response_format`). Without
@@ -270,7 +272,9 @@ erases previous successful findings.
   all pages: filename, matter, live stage, and a link back to the
   document row. It polls only while runs are active, survives refresh
   (state comes from the server), and completed/failed items can be
-  dismissed without deleting results. Document rows show the live stage
+  dismissed without deleting results. Polls back off (4s to 15s) while
+  runs sit unchanged, and the panel reuses page poll results instead of
+  refetching the same runs. Document rows show the live stage
   with Retry on failure, and deletion is paused during active
   processing.
 

@@ -21,15 +21,22 @@ export const FINDING_SEVERITIES = ["high", "medium", "low"] as const;
 export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
 
 /** Preferred maximum extracted-text characters per model call. */
-export const ANALYSIS_SECTION_CHARS = 6000;
+export const ANALYSIS_SECTION_CHARS = 12000;
 /** Overlap applied only when a single paragraph exceeds the section budget. */
 export const ANALYSIS_SECTION_OVERLAP = 200;
-/** Max sections analyzed per run; the remainder is reported, never silent. */
-export const ANALYSIS_MAX_SECTIONS = 12;
+/**
+ * Max sections analyzed per run; the remainder is reported, never silent.
+ * Sized to cover the largest extractable document end to end (500k chars at
+ * the default section size needs ~42 sections) instead of stopping after a
+ * fixed head of the document.
+ */
+export const ANALYSIS_MAX_SECTIONS = 200;
+/** Max sections analyzed concurrently; independent model calls run together. */
+export const ANALYSIS_CONCURRENCY = 4;
 /** Max findings accepted per section response; extras are reported, not fatal. */
 export const ANALYSIS_MAX_FINDINGS_PER_SECTION = 20;
 /** Max findings accepted per run; the remainder is reported, not fatal. */
-export const ANALYSIS_MAX_FINDINGS_PER_RUN = 100;
+export const ANALYSIS_MAX_FINDINGS_PER_RUN = 200;
 /** Max stored excerpt characters; longer quotes are rejected as malformed. */
 export const ANALYSIS_MAX_EXCERPT_CHARS = 2000;
 /** Minimum normalized excerpt characters; shorter quotes are unverifiable. */
@@ -405,6 +412,28 @@ export interface ModelCallMeta {
 
 export type ModelCall = (messages: { role: "system" | "user"; content: string }[], meta: ModelCallMeta) => Promise<string>;
 
+/** Run-wide analysis tuning, sourced from the environment by callers. */
+export interface AnalysisSettings {
+  sectionChars: number;
+  maxSections: number;
+  concurrency: number;
+  maxFindings: number;
+}
+
+export function analysisSettingsFromEnv(env: {
+  analysisSectionChars: number;
+  analysisMaxSections: number;
+  analysisConcurrency: number;
+  analysisMaxFindings: number;
+}): AnalysisSettings {
+  return {
+    sectionChars: env.analysisSectionChars,
+    maxSections: env.analysisMaxSections,
+    concurrency: env.analysisConcurrency,
+    maxFindings: env.analysisMaxFindings,
+  };
+}
+
 export interface AnalysisProgress {
   sectionsDone: number;
   sectionsTotal: number;
@@ -415,6 +444,10 @@ export interface AnalysisProgress {
 export interface AnalyzeOptions {
   sectionChars?: number;
   maxSections?: number;
+  /** Sections analyzed concurrently; clamped to at least 1. */
+  concurrency?: number;
+  /** Max verified findings kept per run; extras are reported, not fatal. */
+  maxFindings?: number;
   /** Epoch ms; sections not started before it are skipped, never faked. */
   deadlineMs?: number;
   now?: () => number;
@@ -435,11 +468,29 @@ function errorCode(err: unknown): string {
 }
 
 /**
+ * One section's settled output. Verification happens at settle time so live
+ * verified counts can gate further starts; dedupe and the run findings cap
+ * apply later in a deterministic in-order merge.
+ */
+interface SettledSection {
+  started: boolean;
+  ok: boolean;
+  /** Failure code when the section was attempted but produced no output. */
+  code?: string;
+  /** Verified findings in model order; dedupe and run cap apply at merge. */
+  verified: VerifiedFinding[];
+  /** True when the response exceeded the per-section finding cap. */
+  capped: boolean;
+}
+
+/**
  * Run bounded analysis over page texts. Sections are independent: provider
  * failures, malformed output, and unverifiable findings affect only their
  * own section, and fatal provider errors stop the run instead of burning
- * more calls. Never throws for expected outcomes (only for programmer
- * errors); never logs document text.
+ * more calls. Independent sections are analyzed concurrently; a section
+ * already in flight always settles, while fatal errors, the findings cap,
+ * and the deadline gate starting new ones. Never throws for expected
+ * outcomes (only for programmer errors); never logs document text.
  */
 export async function analyzePages(
   pages: string[],
@@ -449,6 +500,11 @@ export async function analyzePages(
   const now = options.now ?? Date.now;
   const sections = splitIntoSections(pages, { maxChars: options.sectionChars });
   const maxSections = options.maxSections ?? ANALYSIS_MAX_SECTIONS;
+  const maxFindings = options.maxFindings ?? ANALYSIS_MAX_FINDINGS_PER_RUN;
+  const concurrency = Math.max(
+    1,
+    Math.floor(options.concurrency ?? ANALYSIS_CONCURRENCY),
+  );
   const planned = sections.slice(0, maxSections);
   const cappedByCount = sections.length > maxSections;
 
@@ -468,12 +524,25 @@ export async function analyzePages(
   let fatal: string | undefined;
   let runCapHit = false;
   let deadlineHit = false;
+  /** Verified findings settled so far; gates starting further sections. */
+  let verifiedTotal = 0;
+  /** Why workers stopped starting new sections, when any planned remained. */
+  let stopReason: "fatal" | "cap" | "deadline" | undefined;
   const attemptedPages = new Set<number>();
+  const settled: SettledSection[] = planned.map(() => ({
+    started: false,
+    ok: false,
+    verified: [],
+    capped: false,
+  }));
 
   const expired = (): boolean => options.deadlineMs !== undefined && now() >= options.deadlineMs;
+  // Sections may settle out of order; this counter only moves forward, so
+  // live progress readers always see a coherent snapshot.
+  let settledCount = 0;
   const reportProgress = (): void => {
     options.onProgress?.({
-      sectionsDone: analyzed + failed,
+      sectionsDone: settledCount,
       sectionsTotal: planned.length,
       pagesCovered: attemptedPages.size,
       totalPages: pages.length,
@@ -486,18 +555,20 @@ export async function analyzePages(
   };
   reportProgress();
 
-  for (let index = 0; index < planned.length; index += 1) {
+  // A new section starts only while no fatal error stopped the run, the
+  // deadline has not passed, and the findings cap still has room: settled
+  // findings plus each in-flight section's worst case (a full per-section
+  // envelope) must fit, so in-flight overshoot past the cap stays bounded
+  // by one envelope instead of growing with concurrency.
+  const mayStart = (inFlightCount: number): boolean =>
+    fatal === undefined &&
+    verifiedTotal + inFlightCount * ANALYSIS_MAX_FINDINGS_PER_SECTION < maxFindings &&
+    !expired();
+
+  const runSection = async (index: number): Promise<void> => {
     const section = planned[index] as TextSection;
-    if (fatal !== undefined || findings.length >= ANALYSIS_MAX_FINDINGS_PER_RUN) {
-      skipped += planned.length - index;
-      runCapHit = findings.length >= ANALYSIS_MAX_FINDINGS_PER_RUN;
-      break;
-    }
-    if (expired()) {
-      skipped += planned.length - index;
-      deadlineHit = true;
-      break;
-    }
+    const slot = settled[index] as SettledSection;
+    slot.started = true;
     const meta: ModelCallMeta = {
       sectionId: section.id,
       sectionIndex: index,
@@ -530,31 +601,16 @@ export async function analyzePages(
       code = "bad_response";
     }
     if (code !== undefined || content === undefined) {
-      failed += 1;
-      const failure: SectionFailure = { sectionId: section.id, code: code ?? "bad_response" };
-      sectionErrors.push(failure);
-      coverSection(section);
-      reportProgress();
-      if (code !== undefined && isFatalCode(code)) {
-        fatal = code;
-        skipped += planned.length - index - 1;
-        break;
+      slot.code = code ?? "bad_response";
+      if (isFatalCode(slot.code)) {
+        fatal = slot.code;
       }
-      continue;
+      return;
     }
     const envelope = parseFindingsResponse(content) as FindingsEnvelope;
-    if (envelope.capped) {
-      limitations.push(
-        `Section ${section.id} returned more than ${ANALYSIS_MAX_FINDINGS_PER_SECTION} findings; only the first ${ANALYSIS_MAX_FINDINGS_PER_SECTION} were kept.`,
-      );
-    }
-    analyzed += 1;
-    coverSection(section);
-    reportProgress();
+    slot.ok = true;
+    slot.capped = envelope.capped;
     for (const item of envelope.items) {
-      if (findings.length >= ANALYSIS_MAX_FINDINGS_PER_RUN) {
-        break;
-      }
       const raw = parseModelFinding(item);
       if (raw === undefined) {
         droppedInvalid += 1;
@@ -565,7 +621,80 @@ export async function analyzePages(
         droppedUnverified += 1;
         continue;
       }
-      const key = `${verified.category} ${normalizeText(verified.excerpt)}`;
+      slot.verified.push(verified);
+    }
+    verifiedTotal += slot.verified.length;
+  };
+
+  // Worker pool over the planned sections. Sections are independent, so up
+  // to `concurrency` model calls run together; a section already in flight
+  // always settles and only new starts are gated. Progress and coverage are
+  // reported live as sections settle, in completion order.
+  let next = 0;
+  let inFlight = 0;
+  const workers: Promise<void>[] = [];
+  const workerCount = Math.min(concurrency, planned.length);
+  for (let worker = 0; worker < workerCount; worker += 1) {
+    workers.push(
+      (async () => {
+        for (;;) {
+          if (next >= planned.length) {
+            return;
+          }
+          if (!mayStart(inFlight)) {
+            if (stopReason === undefined) {
+              stopReason =
+                fatal !== undefined
+                  ? "fatal"
+                  : verifiedTotal + inFlight * ANALYSIS_MAX_FINDINGS_PER_SECTION >=
+                      maxFindings
+                    ? "cap"
+                    : "deadline";
+            }
+            return;
+          }
+          const index = next;
+          next += 1;
+          inFlight += 1;
+          try {
+            await runSection(index);
+          } finally {
+            inFlight -= 1;
+          }
+          settledCount += 1;
+          coverSection(planned[index] as TextSection);
+          reportProgress();
+        }
+      })(),
+    );
+  }
+  await Promise.all(workers);
+
+  // Merge in section order so dedupe and the findings cap resolve
+  // deterministically no matter which order sections settled in.
+  for (let index = 0; index < planned.length; index += 1) {
+    const slot = settled[index] as SettledSection;
+    const section = planned[index] as TextSection;
+    if (!slot.started) {
+      skipped += 1;
+      continue;
+    }
+    if (!slot.ok) {
+      failed += 1;
+      sectionErrors.push({ sectionId: section.id, code: slot.code ?? "bad_response" });
+      continue;
+    }
+    analyzed += 1;
+    if (slot.capped) {
+      limitations.push(
+        `Section ${section.id} returned more than ${ANALYSIS_MAX_FINDINGS_PER_SECTION} findings; only the first ${ANALYSIS_MAX_FINDINGS_PER_SECTION} were kept.`,
+      );
+    }
+    for (const verified of slot.verified) {
+      if (findings.length >= maxFindings) {
+        break;
+      }
+      const key = `${verified.category}\0${normalizeText(verified.excerpt)}`;
       if (seen.has(key)) {
         merged += 1;
         continue;
@@ -573,6 +702,17 @@ export async function analyzePages(
       seen.add(key);
       findings.push(verified);
     }
+  }
+  if (stopReason === "cap") {
+    runCapHit = true;
+  }
+  if (stopReason === "deadline") {
+    deadlineHit = true;
+  }
+  if (!runCapHit && verifiedTotal - merged - findings.length > 0) {
+    // Every section was attempted, yet verified findings were cut by the
+    // run cap during the ordered merge (in-flight overshoot).
+    runCapHit = true;
   }
 
   if (cappedByCount) {
@@ -588,7 +728,9 @@ export async function analyzePages(
   }
   if (runCapHit) {
     limitations.push(
-      `Finding limit (${ANALYSIS_MAX_FINDINGS_PER_RUN}) reached; remaining sections were not analyzed.`,
+      stopReason === "cap"
+        ? `Finding limit (${maxFindings}) reached; remaining sections were not analyzed.`
+        : `Finding limit (${maxFindings}) reached; further findings were not kept.`,
     );
   }
   if (deadlineHit) {

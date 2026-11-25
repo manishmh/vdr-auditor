@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  ANALYSIS_MAX_FINDINGS_PER_RUN,
   ANALYSIS_MAX_FINDINGS_PER_SECTION,
   analyzePages,
   parseFindingsResponse,
@@ -253,7 +252,7 @@ describe("analyzePages", () => {
     const outcome = await analyzePages(["a".repeat(50), "b".repeat(50)], async () => {
       calls += 1;
       return calls <= 2 ? "definitely not json{{" : JSON.stringify({ findings: [] });
-    }, { sectionChars: 60 });
+    }, { sectionChars: 60, concurrency: 1 });
     expect(calls).toBe(3);
     expect(outcome.stats.sectionsFailed).toBe(1);
     expect(outcome.stats.sectionsAnalyzed).toBe(1);
@@ -279,7 +278,7 @@ describe("analyzePages", () => {
     const outcome = await analyzePages(["a".repeat(40), "b".repeat(40), "c".repeat(40)], async () => {
       calls += 1;
       throw new MetaError("auth", "bad key", 401);
-    }, { sectionChars: 50 });
+    }, { sectionChars: 50, concurrency: 1 });
     expect(calls).toBe(1);
     expect(outcome.fatal).toBe("auth");
     expect(outcome.findings).toHaveLength(0);
@@ -329,13 +328,95 @@ describe("analyzePages", () => {
           ),
         });
       },
-      { sectionChars: 400 },
+      { sectionChars: 400, maxFindings: 100 },
     );
-    expect(outcome.findings).toHaveLength(ANALYSIS_MAX_FINDINGS_PER_RUN);
+    expect(outcome.findings).toHaveLength(100);
     expect(outcome.limited).toBe(true);
     expect(outcome.limitations.join(" ")).toContain("Finding limit");
     expect(outcome.stats.sectionsSkipped).toBeGreaterThan(0);
     expect(calls).toBeLessThan(12);
+  });
+
+  it("analyzes every section of a long document by default", async () => {
+    // 30 headed pages, each past the heading-split threshold: the old
+    // 12-section head would leave more than half behind.
+    const pages = Array.from(
+      { length: 30 },
+      (_, page) => `Section ${page + 1}. ${"body text ".repeat(400)}`,
+    );
+    let calls = 0;
+    const outcome = await analyzePages(pages, async () => {
+      calls += 1;
+      return JSON.stringify({ findings: [] });
+    });
+    expect(outcome.stats.sectionsTotal).toBe(30);
+    expect(outcome.stats.sectionsAnalyzed).toBe(30);
+    expect(outcome.stats.sectionsSkipped).toBe(0);
+    expect(calls).toBe(30);
+    expect(outcome.limited).toBe(false);
+    expect(outcome.pagesAnalyzed).toBe(30);
+  });
+
+  it("analyzes sections concurrently up to the limit", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const outcome = await analyzePages(
+      ["a".repeat(50), "b".repeat(50), "c".repeat(50), "d".repeat(50)],
+      async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight -= 1;
+        return JSON.stringify({ findings: [] });
+      },
+      { sectionChars: 60, concurrency: 2 },
+    );
+    expect(peak).toBe(2);
+    expect(outcome.stats.sectionsAnalyzed).toBe(4);
+    expect(outcome.stats.sectionsSkipped).toBe(0);
+    expect(outcome.limited).toBe(false);
+  });
+
+  it("merges concurrent findings in section order", async () => {
+    const outcome = await analyzePages(
+      ["Shared clause text here.", "Shared clause text here.", "Shared clause text here."],
+      async (_messages, meta) => {
+        // First section settles last; the merge must still dedupe in order.
+        await new Promise((resolve) => setTimeout(resolve, meta.sectionIndex === 0 ? 10 : 0));
+        return findingJson("Shared clause text here.", null);
+      },
+      { sectionChars: 30, concurrency: 3 },
+    );
+    expect(outcome.findings).toHaveLength(1);
+    expect(outcome.stats.duplicatesMerged).toBe(2);
+  });
+
+  it("stops new starts on fatal errors but keeps in-flight sections", async () => {
+    let calls = 0;
+    const outcome = await analyzePages(
+      ["a".repeat(50), "b".repeat(50), "c".repeat(50)],
+      async (_messages, meta) => {
+        calls += 1;
+        if (meta.sectionIndex === 1) {
+          throw new MetaError("auth", "bad key", 401);
+        }
+        if (meta.sectionIndex === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return findingJson("a".repeat(50), 1);
+        }
+        return JSON.stringify({ findings: [] });
+      },
+      { sectionChars: 60, concurrency: 2 },
+    );
+    // Sections 0 and 1 start together; the fatal error in 1 stops section 2
+    // from ever starting, while in-flight section 0 still settles and keeps
+    // its finding.
+    expect(calls).toBe(2);
+    expect(outcome.fatal).toBe("auth");
+    expect(outcome.findings).toHaveLength(1);
+    expect(outcome.stats.sectionsAnalyzed).toBe(1);
+    expect(outcome.stats.sectionsFailed).toBe(1);
+    expect(outcome.stats.sectionsSkipped).toBe(1);
   });
 
   it("skips unstarted sections once the deadline passes", async () => {

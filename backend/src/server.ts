@@ -1,3 +1,4 @@
+import { analysisSettingsFromEnv } from "./ai/analysis.js";
 import { metaConfigFromEnv } from "./ai/metaClient.js";
 import app from "./app.js";
 import { loadEnv } from "./config/env.js";
@@ -23,6 +24,7 @@ function main(): void {
       mongodbUri: env.mongodbUri,
       mongodbDbName: env.mongodbDbName,
       meta: metaConfigFromEnv(env),
+      analysis: analysisSettingsFromEnv(env),
     });
   }
 

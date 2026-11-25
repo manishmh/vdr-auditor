@@ -1,5 +1,10 @@
 import { ObjectId, type Collection } from "mongodb";
 import { beforeEach, describe, expect, it } from "vitest";
+import {
+  ANALYSIS_MAX_FINDINGS_PER_RUN,
+  ANALYSIS_MAX_SECTIONS,
+  ANALYSIS_SECTION_CHARS,
+} from "../src/ai/analysis.js";
 import { runAnalysisJob } from "../src/ai/job.js";
 import { MetaError } from "../src/ai/metaClient.js";
 import type { AnalysisRunRecord, FindingRecord } from "../src/models/analysis.js";
@@ -86,13 +91,23 @@ describe("runAnalysisJob", () => {
   });
 
   it("persists live section progress while running", async () => {
-    seedDoc(`${"filler ".repeat(300)}\n\nSection 9. Change of control.\n\n${SENTENCE}`);
+    // Two sections via a heading split: filler pushes past the quarter mark
+    // of the default section size, so the clause heading starts section two.
+    seedDoc(`${"filler ".repeat(600)}\n\nSection 9. Change of control.\n\n${SENTENCE}`);
     const observed: Array<number | undefined> = [];
     const outcome = await runAnalysisJob({
       ...collections(),
       meta: META,
       matterId: MATTER_ID,
       docId: DOC_ID,
+      // Sequential sections: each model call observes the previous section's
+      // persisted progress. Concurrent sections would all observe 0.
+      analysis: {
+        sectionChars: ANALYSIS_SECTION_CHARS,
+        maxSections: ANALYSIS_MAX_SECTIONS,
+        concurrency: 1,
+        maxFindings: ANALYSIS_MAX_FINDINGS_PER_RUN,
+      },
       complete: async () => {
         observed.push(fake.runState[0]?.sectionsAnalyzed);
         return JSON.stringify({ findings: [] });
@@ -107,7 +122,7 @@ describe("runAnalysisJob", () => {
   it("reports limited (never clean) when a section fails", async () => {
     // Two sections via a heading split: filler pushes past the quarter mark,
     // so the clause heading starts section two.
-    seedDoc(`${"filler ".repeat(300)}\n\nSection 9. Change of control.\n\n${SENTENCE}`);
+    seedDoc(`${"filler ".repeat(600)}\n\nSection 9. Change of control.\n\n${SENTENCE}`);
     const outcome = await runAnalysisJob({
       ...collections(),
       meta: META,

@@ -206,3 +206,31 @@ export function notifyProcessingChanged(): void {
     window.dispatchEvent(new CustomEvent(PROCESSING_CHANGED_EVENT));
   }
 }
+
+/**
+ * Window event carrying freshly fetched runs (`detail: runs`). Matter and
+ * document pages broadcast every poll result, so the global indicator can
+ * reuse them instead of firing its own duplicate request for the same data.
+ */
+export const PROCESSING_RUNS_EVENT = "vdr:processing-runs";
+
+export function notifyProcessingRuns(runs: ProcessingRunSummary[]): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(PROCESSING_RUNS_EVENT, { detail: runs }));
+  }
+}
+
+export function parseProcessingRunsEvent(value: unknown): ProcessingRunSummary[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const runs: ProcessingRunSummary[] = [];
+  for (const item of value) {
+    const parsed = parseProcessingRunSummary(item);
+    if (parsed === null) {
+      return null;
+    }
+    runs.push(parsed);
+  }
+  return runs;
+}

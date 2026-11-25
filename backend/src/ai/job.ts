@@ -4,6 +4,7 @@ import type { Collection } from "mongodb";
 import {
   FINDINGS_JSON_SCHEMA,
   analyzePages,
+  type AnalysisSettings,
   type ModelCallMeta,
 } from "./analysis.js";
 import {
@@ -57,6 +58,8 @@ export interface AnalysisJobInput {
    * faked. Bounds the whole run regardless of section count.
    */
   deadlineMs?: number;
+  /** Sectioning and concurrency tuning; defaults cover whole documents. */
+  analysis?: AnalysisSettings;
   /**
    * Fail pre-existing running runs for this document as interrupted instead
    * of refusing with in_progress. Only the processing driver (which holds an
@@ -167,6 +170,14 @@ export async function runAnalysisJob(input: AnalysisJobInput): Promise<AnalysisJ
   try {
     outcome = await analyzePages(pages, complete, {
       ...(input.deadlineMs !== undefined ? { deadlineMs: input.deadlineMs } : {}),
+      ...(input.analysis !== undefined
+        ? {
+            sectionChars: input.analysis.sectionChars,
+            maxSections: input.analysis.maxSections,
+            concurrency: input.analysis.concurrency,
+            maxFindings: input.analysis.maxFindings,
+          }
+        : {}),
       // Live progress for the UI. Best-effort: a failed write must never
       // break analysis, and the final update below always overwrites these.
       onProgress: (progress) => {

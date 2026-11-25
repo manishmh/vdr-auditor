@@ -36,6 +36,7 @@ import {
   latestRunPerDoc,
   listProcessingRuns,
   notifyProcessingChanged,
+  notifyProcessingRuns,
   PROCESSING_STAGE_LABELS,
   processingErrorMessage,
   retryProcessing,
@@ -56,6 +57,8 @@ import { FindingGroups, FindingsEmpty } from "../../../../components/findings";
 
 const API_URL = process.env["NEXT_PUBLIC_API_URL"];
 const POLL_MS = 4000;
+/** Backoff ceiling while the run sits unchanged; analysis takes minutes. */
+const POLL_MAX_MS = 15000;
 
 type LoadState<T> =
   | { status: "loading" }
@@ -240,6 +243,7 @@ export default function DocumentDetailPage() {
           const latest = latestRunPerDoc(runsRes.value);
           lastRunsSignature.current = runsSignature(latest);
           setRuns(latest);
+          notifyProcessingRuns(latest);
         } else {
           setRuns([]);
         }
@@ -266,6 +270,9 @@ export default function DocumentDetailPage() {
         heavy = runsSignature(latest) !== lastRunsSignature.current;
         lastRunsSignature.current = runsSignature(latest);
         setRuns(latest);
+        // Let the global indicator reuse this fetch instead of polling the
+        // same runs itself a moment later.
+        notifyProcessingRuns(latest);
       }
       if (analysesRes.status === "fulfilled") {
         setAnalyses({ status: "ready", value: analysesRes.value });
@@ -349,8 +356,10 @@ export default function DocumentDetailPage() {
 
   // Follow this document's run while it is active. Ticks funnel through
   // the sequenced loadAll, which refetches the heavy collections only when
-  // the run actually advances. Ticks never overlap and never fire for a
-  // hidden tab.
+  // the run actually advances. Ticks never overlap, never fire for a hidden
+  // tab, and back off while nothing changes: analysis runs for minutes per
+  // document, so a fixed 4s cadence would fire hundreds of requests per
+  // document for no new information.
   useEffect(() => {
     if (!idsReady || API_URL === undefined || API_URL === "" || !analysisInProgress) {
       return;
@@ -358,21 +367,43 @@ export default function DocumentDetailPage() {
     const apiUrl: string = API_URL;
     const id: string = matterId;
     const targetDocId: string = docId;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let quietTicks = 0;
+    const schedule = (delayMs: number): void => {
+      if (!stopped) {
+        timer = setTimeout(tick, delayMs);
+      }
+    };
     const tick = () => {
+      if (stopped) {
+        return;
+      }
       if (typeof document !== "undefined" && document.hidden) {
+        schedule(POLL_MS);
         return;
       }
       if (pollInFlight.current) {
+        schedule(POLL_MS);
         return;
       }
+      const before = lastRunsSignature.current;
       pollInFlight.current = true;
       void loadAll(apiUrl, id, targetDocId, true).finally(() => {
         pollInFlight.current = false;
+        if (stopped) {
+          return;
+        }
+        quietTicks = lastRunsSignature.current === before ? quietTicks + 1 : 0;
+        schedule(Math.min(POLL_MS * 2 ** quietTicks, POLL_MAX_MS));
       });
     };
-    const timer = setInterval(tick, POLL_MS);
+    schedule(POLL_MS);
     return () => {
-      clearInterval(timer);
+      stopped = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
     };
   }, [matterId, docId, idsReady, analysisInProgress, loadAll]);
 

@@ -1,5 +1,6 @@
 import { Router, type Response } from "express";
 import { ObjectId } from "mongodb";
+import { analysisSettingsFromEnv } from "../ai/analysis.js";
 import { metaConfigFromEnv } from "../ai/metaClient.js";
 import { getDocumentsCollection } from "../db/documents.js";
 import { getMattersCollection } from "../db/matters.js";
@@ -130,6 +131,7 @@ export function createProcessingRouter(options: ProcessingRouterOptions): Router
           mongodbUri: options.env.mongodbUri,
           mongodbDbName: options.env.mongodbDbName,
           meta: metaConfigFromEnv(options.env),
+          analysis: analysisSettingsFromEnv(options.env),
         });
         res.status(200).json(result);
       } catch (err: unknown) {

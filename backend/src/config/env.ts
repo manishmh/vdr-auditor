@@ -1,3 +1,10 @@
+import {
+  ANALYSIS_CONCURRENCY,
+  ANALYSIS_MAX_FINDINGS_PER_RUN,
+  ANALYSIS_MAX_SECTIONS,
+  ANALYSIS_SECTION_CHARS,
+} from "../ai/analysis.js";
+
 export interface Env {
   nodeEnv: string;
   port: number;
@@ -10,6 +17,10 @@ export interface Env {
   metaBaseUrl: string;
   metaTimeoutMs: number;
   metaMaxRetries: number;
+  analysisSectionChars: number;
+  analysisMaxSections: number;
+  analysisConcurrency: number;
+  analysisMaxFindings: number;
 }
 
 const DEFAULT_PORT = 4000;
@@ -101,6 +112,34 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
       DEFAULT_META_MAX_RETRIES,
       0,
       5,
+    ),
+    analysisSectionChars: parseBoundedInt(
+      source["ANALYSIS_SECTION_CHARS"],
+      "ANALYSIS_SECTION_CHARS",
+      ANALYSIS_SECTION_CHARS,
+      1000,
+      100000,
+    ),
+    analysisMaxSections: parseBoundedInt(
+      source["ANALYSIS_MAX_SECTIONS"],
+      "ANALYSIS_MAX_SECTIONS",
+      ANALYSIS_MAX_SECTIONS,
+      1,
+      1000,
+    ),
+    analysisConcurrency: parseBoundedInt(
+      source["ANALYSIS_CONCURRENCY"],
+      "ANALYSIS_CONCURRENCY",
+      ANALYSIS_CONCURRENCY,
+      1,
+      8,
+    ),
+    analysisMaxFindings: parseBoundedInt(
+      source["ANALYSIS_MAX_FINDINGS"],
+      "ANALYSIS_MAX_FINDINGS",
+      ANALYSIS_MAX_FINDINGS_PER_RUN,
+      10,
+      1000,
     ),
   };
 }

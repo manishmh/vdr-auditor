@@ -1,5 +1,6 @@
 import { Router, type Response } from "express";
 import { ObjectId } from "mongodb";
+import { analysisSettingsFromEnv } from "../ai/analysis.js";
 import { runAnalysisJob } from "../ai/job.js";
 import { metaConfigFromEnv } from "../ai/metaClient.js";
 import { getAnalysesCollections } from "../db/analyses.js";
@@ -86,6 +87,7 @@ export function createAnalysesRouter(options: AnalysesRouterOptions): Router {
           matterId,
           docId,
           deadlineMs: Date.now() + PROCESSING_BUDGET_MS,
+          analysis: analysisSettingsFromEnv(options.env),
         });
         if (!outcome.ok) {
           switch (outcome.code) {

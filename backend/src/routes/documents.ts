@@ -1,5 +1,6 @@
 import express, { Router, type Response } from "express";
 import { ObjectId } from "mongodb";
+import { analysisSettingsFromEnv } from "../ai/analysis.js";
 import { metaConfigFromEnv } from "../ai/metaClient.js";
 import { getAnalysesCollections } from "../db/analyses.js";
 import { getDocumentsCollection } from "../db/documents.js";
@@ -202,6 +203,7 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
                 mongodbUri: options.env.mongodbUri as string,
                 mongodbDbName: options.env.mongodbDbName,
                 meta,
+                analysis: analysisSettingsFromEnv(options.env),
               }),
             );
           } catch (err: unknown) {
@@ -390,6 +392,7 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
                   mongodbUri: options.env.mongodbUri as string,
                   mongodbDbName: options.env.mongodbDbName,
                   meta,
+                  analysis: analysisSettingsFromEnv(options.env),
                 }),
               );
             } catch (err: unknown) {
@@ -411,6 +414,7 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
               mongodbUri: options.env.mongodbUri as string,
               mongodbDbName: options.env.mongodbDbName,
               meta,
+              analysis: analysisSettingsFromEnv(options.env),
             }),
           );
         } catch (err: unknown) {
