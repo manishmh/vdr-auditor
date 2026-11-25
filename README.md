@@ -359,11 +359,14 @@ Notes:
 - Health responses never include env values, credentials, stack traces, or
   connection strings. Liveness reports the runtime Node version so a wrong
   runtime is visible without backend access.
-- `backend/vercel.json` pins extra traced files into the serverless bundle:
-  pdf.js loads its worker (`pdf.worker.mjs`) through a dynamic import that
-  file tracing cannot see, so without the pin every extraction fails as
-  `unparseable` in production while working locally. Keep the pin when
-  upgrading pdfjs-dist.
+- `backend/vercel.json` pins extra traced files into the serverless bundle,
+  and `pdfLoader.ts` imports the worker module with a literal path as a
+  backstop: pdf.js loads its worker (`pdf.worker.mjs`) through a dynamic
+  import that file tracing cannot see, so without them every extraction
+  fails as `unparseable` in production while working locally. Keep both
+  when upgrading pdfjs-dist. (Only `functions.includeFiles` is used: the
+  newer-sounding top-level tracing key does not exist in Vercel's schema
+  and fails the deploy.)
 
 ## Scope boundary
 

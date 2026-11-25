@@ -29,6 +29,13 @@ export async function loadPdfDocument(bytes: Uint8Array): Promise<PdfDocumentLik
   // Imported lazily: the pdf.js bundle is large, and most requests (health,
   // lists, findings) never touch it. A static import would tax every cold
   // serverless boot and spam every cold log with its warnings.
+  //
+  // The worker module is imported first with a literal path on purpose:
+  // pdf.js loads it through a dynamic import that serverless file tracers
+  // cannot see, so without this line (or the vercel.json pin) the file is
+  // missing in production and every extraction fails. The import itself is
+  // side-effect free (it only defines the message handler).
+  void await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const doc: PDFDocumentProxy = await getDocument({
     data,
