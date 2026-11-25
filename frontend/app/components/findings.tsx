@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import {
   FINDING_CATEGORY_ORDER,
   REVIEW_STATUS_LABELS,
@@ -9,7 +10,7 @@ import {
   type FindingSeverity,
   type ReviewStatus,
 } from "@/lib/analyses";
-import { Badge, EmptyState, type BadgeTone } from "./ui";
+import { Badge, Button, EmptyState, type BadgeTone } from "./ui";
 
 export const SEVERITY_TONE: Record<FindingSeverity, BadgeTone> = {
   high: "danger",
@@ -26,66 +27,91 @@ const SEVERITY_RANK: Record<FindingSeverity, number> = {
 export function FindingCard({
   finding,
   showFilename,
+  open,
+  onToggle,
   onReviewChange,
 }: {
   finding: Finding;
   showFilename: boolean;
+  open: boolean;
+  onToggle: () => void;
   onReviewChange: (finding: Finding, reviewStatus: ReviewStatus) => void;
 }) {
+  const bodyId = `finding-body-${finding.id}`;
   return (
     <li className="rounded-lg border border-slate-200 bg-white px-4 py-3">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={SEVERITY_TONE[finding.severity]}>
-          {SEVERITY_LABELS[finding.severity]}
-        </Badge>
-        <p className="font-medium text-slate-900">{finding.title}</p>
-      </div>
-      <p className="mt-2 text-sm text-slate-700">{finding.explanation}</p>
-      <blockquote className="mt-2 border-l-2 border-slate-300 pl-3 text-sm text-slate-600">
-        <p className="whitespace-pre-wrap break-words">{finding.excerpt}</p>
-        <p className="mt-1 text-[13px] text-slate-500">
-          {showFilename ? (
-            <Link
-              href={`/matters/${finding.matterId}/docs/${finding.docId}`}
-              className="rounded font-medium text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
-            >
-              {finding.filename ?? "Document"}
-            </Link>
-          ) : (
-            "Source excerpt"
-          )}
-          {finding.page !== null ? ` · Page ${finding.page}` : " · page unavailable"}
-        </p>
-      </blockquote>
-      {finding.counterEvidence !== undefined && (
-        <p className="mt-2 text-sm text-slate-600">
-          <span className="font-medium">Counter-evidence: </span>
-          {finding.counterEvidence}
-        </p>
-      )}
-      {finding.uncertainty !== undefined && (
-        <p className="mt-1 text-sm text-slate-600">
-          <span className="font-medium">Uncertainty: </span>
-          {finding.uncertainty}
-        </p>
-      )}
-      <div className="mt-3 flex items-center gap-2">
-        <label htmlFor={`review-${finding.id}`} className="text-[13px] text-slate-600">
-          Review
-        </label>
-        <select
-          id={`review-${finding.id}`}
-          value={finding.reviewStatus}
-          onChange={(event) => onReviewChange(finding, event.target.value as ReviewStatus)}
-          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-800"
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          aria-controls={bodyId}
+          className="flex min-w-0 flex-1 flex-wrap items-center gap-2 rounded text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
         >
-          {(Object.keys(REVIEW_STATUS_LABELS) as ReviewStatus[]).map((status) => (
-            <option key={status} value={status}>
-              {REVIEW_STATUS_LABELS[status]}
-            </option>
-          ))}
-        </select>
+          <span aria-hidden="true" className="w-4 shrink-0 text-slate-400">
+            {open ? "▾" : "▸"}
+          </span>
+          <Badge tone={SEVERITY_TONE[finding.severity]}>
+            {SEVERITY_LABELS[finding.severity]}
+          </Badge>
+          <span className="min-w-0 flex-1 truncate font-medium text-slate-900">
+            {finding.title}
+          </span>
+          <span className="shrink-0 text-[13px] text-slate-500">
+            {finding.page !== null ? `Page ${finding.page}` : "Page n/a"}
+          </span>
+        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <label htmlFor={`review-${finding.id}`} className="text-[13px] text-slate-600">
+            Review
+          </label>
+          <select
+            id={`review-${finding.id}`}
+            value={finding.reviewStatus}
+            onChange={(event) => onReviewChange(finding, event.target.value as ReviewStatus)}
+            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-800"
+          >
+            {(Object.keys(REVIEW_STATUS_LABELS) as ReviewStatus[]).map((status) => (
+              <option key={status} value={status}>
+                {REVIEW_STATUS_LABELS[status]}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
+      {open && (
+        <div id={bodyId}>
+          <p className="mt-2 text-sm text-slate-700">{finding.explanation}</p>
+          <blockquote className="mt-2 border-l-2 border-slate-300 pl-3 text-sm text-slate-600">
+            <p className="whitespace-pre-wrap break-words">{finding.excerpt}</p>
+            <p className="mt-1 text-[13px] text-slate-500">
+              {showFilename ? (
+                <Link
+                  href={`/matters/${finding.matterId}/docs/${finding.docId}`}
+                  className="rounded font-medium text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                >
+                  {finding.filename ?? "Document"}
+                </Link>
+              ) : (
+                "Source excerpt"
+              )}
+              {finding.page !== null ? ` · Page ${finding.page}` : " · page unavailable"}
+            </p>
+          </blockquote>
+          {finding.counterEvidence !== undefined && (
+            <p className="mt-2 text-sm text-slate-600">
+              <span className="font-medium">Counter-evidence: </span>
+              {finding.counterEvidence}
+            </p>
+          )}
+          {finding.uncertainty !== undefined && (
+            <p className="mt-1 text-sm text-slate-600">
+              <span className="font-medium">Uncertainty: </span>
+              {finding.uncertainty}
+            </p>
+          )}
+        </div>
+      )}
     </li>
   );
 }
@@ -99,8 +125,35 @@ export function FindingGroups({
   showFilename: boolean;
   onReviewChange: (finding: Finding, reviewStatus: ReviewStatus) => void;
 }) {
+  // Independently collapsible cards: any number may stay open at once.
+  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const toggle = (id: string): void => {
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+  const allOpen = findings.length > 0 && findings.every((finding) => openIds.has(finding.id));
   return (
     <>
+      {findings.length > 1 && (
+        <div className="mb-3">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() =>
+              setOpenIds(allOpen ? new Set() : new Set(findings.map((finding) => finding.id)))
+            }
+          >
+            {allOpen ? "Collapse all" : "Expand all"}
+          </Button>
+        </div>
+      )}
       {FINDING_CATEGORY_ORDER.map((group) => {
         const items = findings
           .filter((finding) => finding.category === group.id)
@@ -110,7 +163,10 @@ export function FindingGroups({
         }
         return (
           <div key={group.id}>
-            <h3 className="text-base font-semibold text-slate-900">{group.label}</h3>
+            <h3 className="text-base font-semibold text-slate-900">
+              {group.label}{" "}
+              <span className="font-normal text-slate-500">({items.length})</span>
+            </h3>
             <p className="mt-0.5 text-sm text-slate-600">{group.description}</p>
             <ul className="mt-3 space-y-3">
               {items.map((finding) => (
@@ -118,6 +174,8 @@ export function FindingGroups({
                   key={finding.id}
                   finding={finding}
                   showFilename={showFilename}
+                  open={openIds.has(finding.id)}
+                  onToggle={() => toggle(finding.id)}
                   onReviewChange={onReviewChange}
                 />
               ))}
