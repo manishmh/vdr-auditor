@@ -173,6 +173,7 @@ describe("toDocumentResponse", () => {
       extractionStatus: "completed",
       extractedText: "hello",
       pageCount: 1,
+      pageOffset: 2,
       extractedAt: new Date("2026-01-04T05:06:07.000Z"),
     };
     const body = toDocumentResponse(doc);
@@ -187,6 +188,7 @@ describe("toDocumentResponse", () => {
       extractionStatus: "completed",
       extractedText: "hello",
       pageCount: 1,
+      pageOffset: 2,
       extractedAt: "2026-01-04T05:06:07.000Z",
       extractionError: undefined,
     });
@@ -207,5 +209,8 @@ describe("toDocumentResponse", () => {
     expect(body.extractionStatus).toBe("pending");
     expect(body.extractedText).toBeUndefined();
     expect(body.extractionError).toBeUndefined();
+    // Records extracted before the offset was tracked stay usable: viewers
+    // treat an absent offset as zero.
+    expect(body.pageOffset).toBeUndefined();
   });
 });

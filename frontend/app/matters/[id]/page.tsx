@@ -4,12 +4,29 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  FINDING_CATEGORY_ORDER,
+  REVIEW_STATUS_LABELS,
+  SEVERITY_LABELS,
   listAnalyses,
   listFindings,
+  updateFindingReview,
   type DocAnalysis,
   type Finding,
+  type FindingSeverity,
+  type ReviewStatus,
 } from "@/lib/analyses";
 import { formatBytes, formatDate } from "@/lib/format";
+import {
+  EMPTY_FINDING_FILTERS,
+  applyFindingFilters,
+  countOpenBySeverity,
+  describeFindingFilters,
+  isFiltered,
+  isReviewedFinding,
+  reviewCompletion,
+  selectCoveredDocIds,
+  type FindingFilters,
+} from "@/lib/findingsView";
 import {
   APP_CONFIG_ERROR_MESSAGE,
   deleteMatter,
@@ -23,6 +40,7 @@ import {
   deleteDocument,
   downloadDocument,
   extractionErrorMessage,
+  isAwaitingUpload,
   listDocuments,
   uploadDocument,
   validatePdfFile,
@@ -53,6 +71,8 @@ import {
   Toast,
   type BadgeTone,
 } from "../../components/ui";
+import { FindingGroups, FindingsEmpty } from "../../components/findings";
+import ReviewQueue from "../../components/ReviewQueue";
 import { useNavBusy } from "../../components/useNavBusy";
 
 const API_URL = process.env["NEXT_PUBLIC_API_URL"];
@@ -71,6 +91,8 @@ type LoadState<T> =
 interface UploadState {
   key: number;
   filename: string;
+  /** Retained so a failed upload can retry without reselecting the file. */
+  file: File;
   phase: "uploading" | "done" | "error";
   progress: number;
   message: string | null;
@@ -130,6 +152,54 @@ function runsSignature(runs: ProcessingRunSummary[]): string {
     .join("|");
 }
 
+function SummaryCard({
+  label,
+  value,
+  sub,
+  tone,
+  href,
+  onSelect,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+  tone: BadgeTone;
+  href?: string;
+  onSelect?: () => void;
+}) {
+  const toneBar: Record<BadgeTone, string> = {
+    success: "bg-emerald-500",
+    warning: "bg-amber-500",
+    danger: "bg-red-500",
+    neutral: "bg-slate-300",
+    info: "bg-blue-800",
+  };
+  const body = (
+    <>
+      <span aria-hidden="true" className={`absolute top-0 left-0 h-full w-1 ${toneBar[tone]}`} />
+      <span className="block text-2xl font-semibold tracking-tight tabular-nums text-slate-900">
+        {value}
+      </span>
+      <span className="mt-0.5 block text-sm font-medium text-slate-700">{label}</span>
+      <span className="mt-0.5 block text-[13px] text-slate-500">{sub}</span>
+    </>
+  );
+  const className =
+    "relative block rounded-lg border border-slate-200 bg-white px-4 py-3 pl-5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800";
+  if (href === undefined) {
+    return <div className={className}>{body}</div>;
+  }
+  return (
+    <a
+      href={href}
+      onClick={onSelect}
+      className={`${className} transition-colors hover:border-slate-300 hover:bg-slate-50`}
+    >
+      {body}
+    </a>
+  );
+}
+
 export default function MatterDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -166,6 +236,9 @@ export default function MatterDetailPage() {
   const [confirmDeleteMatter, setConfirmDeleteMatter] = useState(false);
   const [deletingMatter, setDeletingMatter] = useState(false);
   const [matterError, setMatterError] = useState<string | null>(null);
+  const [queueFilters, setQueueFilters] = useState<FindingFilters>(EMPTY_FINDING_FILTERS);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
   // Guards the background poll: one refresh in flight at most, and the
   // last-seen runs signature so unchanged state never refetches the heavy
   // documents payload (full extracted text, hundreds of kB per fetch).
@@ -294,11 +367,12 @@ export default function MatterDetailPage() {
         }
       };
       if (!silent) {
-        // First load: everything in parallel for speed.
+        // First load: everything in parallel for speed. Documents arrive
+        // without extracted text; text loads on demand on the document page.
         const [runsRes, analysesRes, docsRes, findingsRes] = await Promise.allSettled([
           listProcessingRuns(apiUrl, id),
           listAnalyses(apiUrl, id),
-          listDocuments(apiUrl, id),
+          listDocuments(apiUrl, id, { includeText: false }),
           listFindings(apiUrl, id),
         ]);
         if (!live()) {
@@ -336,7 +410,7 @@ export default function MatterDetailPage() {
         return;
       }
       const [docsRes, findingsRes] = await Promise.allSettled([
-        listDocuments(apiUrl, id, { fresh: true }),
+        listDocuments(apiUrl, id, { fresh: true, includeText: false }),
         listFindings(apiUrl, id),
       ]);
       if (!live()) {
@@ -374,6 +448,10 @@ export default function MatterDetailPage() {
   }, [matterId, loadAll]);
 
   const hasActiveRuns = runs.some((run) => isActiveProcessingStage(run.stage));
+  // Uploads acknowledge before their bytes land; keep polling until the
+  // bytes arrive (a processing run then appears) or the upload fails.
+  const awaitingUpload =
+    docs.status === "ready" ? docs.value.some(isAwaitingUpload) : false;
 
   // Follow persisted processing state while anything runs here; the runs
   // themselves live on the server, so refresh and navigation are safe. Ticks
@@ -383,7 +461,12 @@ export default function MatterDetailPage() {
   // for minutes per document, so a fixed 4s cadence would fire hundreds of
   // requests per document for no new information.
   useEffect(() => {
-    if (matterId === "" || API_URL === undefined || API_URL === "" || !hasActiveRuns) {
+    if (
+      matterId === "" ||
+      API_URL === undefined ||
+      API_URL === "" ||
+      (!hasActiveRuns && !awaitingUpload)
+    ) {
       return;
     }
     const apiUrl: string = API_URL;
@@ -426,7 +509,7 @@ export default function MatterDetailPage() {
         clearTimeout(timer);
       }
     };
-  }, [matterId, hasActiveRuns, loadAll]);
+  }, [matterId, hasActiveRuns, awaitingUpload, loadAll]);
 
   const reloadDocs = (apiUrl: string, id: string) => {
     void loadAll(apiUrl, id, false);
@@ -516,6 +599,7 @@ export default function MatterDetailPage() {
     const entries: UploadState[] = files.map((file, index) => ({
       key: now + index,
       filename: file.name,
+      file,
       phase: "uploading",
       progress: 0,
       message: null,
@@ -593,6 +677,37 @@ export default function MatterDetailPage() {
     return high > 0 ? `${items.length} ${noun} · ${high} high` : `${items.length} ${noun}`;
   };
 
+  const reviewProgressSummary = (items: Finding[]): string | null => {
+    if (items.length === 0) {
+      return null;
+    }
+    const reviewed = items.filter(isReviewedFinding).length;
+    return `${reviewed} of ${items.length} reviewed`;
+  };
+
+  const onReviewChange = async (finding: Finding, reviewStatus: ReviewStatus) => {
+    if (API_URL === undefined || API_URL === "" || matterId === "") {
+      return;
+    }
+    setQueueError(null);
+    try {
+      const updated = await updateFindingReview(API_URL, matterId, finding.id, reviewStatus);
+      // Single copy: every card, row, and count below derives from this
+      // state, so all of them refresh together.
+      setFindings((prev) =>
+        prev.status === "ready"
+          ? {
+              status: "ready",
+              value: prev.value.map((item) => (item.id === updated.id ? updated : item)),
+            }
+          : prev,
+      );
+    } catch (err: unknown) {
+      setQueueError(errorMessage(err, "Couldn't save that change. Please try again."));
+      throw err instanceof Error ? err : new Error("Couldn't save that change.");
+    }
+  };
+
   const onDelete = async (doc: MatterDocument) => {
     if (API_URL === undefined || API_URL === "" || matterId === "") {
       return;
@@ -603,6 +718,24 @@ export default function MatterDetailPage() {
       await deleteDocument(API_URL, matterId, doc.id);
       setConfirmDeleteId(null);
       watchIdsRef.current.delete(doc.id);
+      // The server already confirmed the cascade, so drop the document
+      // from every local collection at once: the silent refresh below
+      // skips refetching when the runs signature is unchanged, which used
+      // to leave the deleted row (and its findings) lingering on screen.
+      const remaining = <T extends { docId?: string; id: string }>(items: T[]): T[] =>
+        items.filter((item) => item.id !== doc.id && item.docId !== doc.id);
+      setDocs((prev) =>
+        prev.status === "ready"
+          ? { status: "ready", value: prev.value.filter((item) => item.id !== doc.id) }
+          : prev,
+      );
+      setFindings((prev) =>
+        prev.status === "ready" ? { status: "ready", value: remaining(prev.value) } : prev,
+      );
+      setAnalyses((prev) =>
+        prev.status === "ready" ? { status: "ready", value: remaining(prev.value) } : prev,
+      );
+      setRuns((prev) => prev.filter((run) => run.docId !== doc.id));
       void loadAll(API_URL, matterId, true);
       notifyProcessingChanged();
     } catch (err: unknown) {
@@ -632,6 +765,37 @@ export default function MatterDetailPage() {
   };
 
   const uploadReady = API_URL !== undefined && API_URL !== "" && matterId !== "";
+
+  const readyFindings = findings.status === "ready" ? findings.value : [];
+  const readyDocs = docs.status === "ready" ? docs.value : [];
+  const readyAnalyses = analyses.status === "ready" ? analyses.value : [];
+  const openCounts = countOpenBySeverity(readyFindings);
+  const completion = reviewCompletion(readyFindings);
+  const queueFindings = applyFindingFilters(readyFindings, queueFilters);
+  const docNameById = new Map(readyDocs.map((doc) => [doc.id, doc.filename]));
+  const filterSummary = describeFindingFilters(queueFilters, {
+    severityLabel: (severity) => SEVERITY_LABELS[severity],
+    categoryLabel: (category) =>
+      FINDING_CATEGORY_ORDER.find((group) => group.id === category)?.label ?? category,
+    statusLabel: (status) => REVIEW_STATUS_LABELS[status],
+    docName: (docId) => docNameById.get(docId),
+  });
+  // Covered = a run with reviewable output exists. Failed, running, and
+  // never-analyzed documents never count as clean — but a newer failed
+  // attempt does not uncover a document whose earlier results are current.
+  const coveredDocIds = selectCoveredDocIds(
+    readyAnalyses,
+    readyDocs.map((doc) => doc.id),
+  );
+  const analyzedDocs = readyDocs.filter((doc) => coveredDocIds.has(doc.id)).length;
+  const failedDocs = readyDocs.filter((doc) => {
+    const run = runForDoc(doc.id);
+    return run?.stage === "failed";
+  }).length;
+  const processingDocs = runs.filter((run) => isActiveProcessingStage(run.stage)).length;
+  const presetQueueFilter = (preset: Partial<FindingFilters>): void => {
+    setQueueFilters({ ...EMPTY_FINDING_FILTERS, ...preset });
+  };
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-8">
@@ -724,6 +888,90 @@ export default function MatterDetailPage() {
         </p>
       )}
 
+      {(docs.status === "loading" || findings.status === "loading" || analyses.status === "loading") && (
+        <div className="mt-6">
+          <LoadingLine>Loading overview…</LoadingLine>
+        </div>
+      )}
+      {docs.status === "ready" &&
+        findings.status === "ready" &&
+        analyses.status === "ready" && (
+          <section aria-label="Matter overview" className="mt-6">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <SummaryCard
+                label="High severity"
+                value={String(openCounts.high)}
+                sub={openCounts.high === 1 ? "open finding" : "open findings"}
+                tone="danger"
+                href="#findings-queue"
+                onSelect={() => presetQueueFilter({ severity: "high" })}
+              />
+              <SummaryCard
+                label="Medium severity"
+                value={String(openCounts.medium)}
+                sub={openCounts.medium === 1 ? "open finding" : "open findings"}
+                tone="warning"
+                href="#findings-queue"
+                onSelect={() => presetQueueFilter({ severity: "medium" })}
+              />
+              <SummaryCard
+                label="Low severity"
+                value={String(openCounts.low)}
+                sub={openCounts.low === 1 ? "open finding" : "open findings"}
+                tone="neutral"
+                href="#findings-queue"
+                onSelect={() => presetQueueFilter({ severity: "low" })}
+              />
+              <SummaryCard
+                label="Reviewed"
+                value={completion.percent === null ? "—" : `${completion.percent}%`}
+                sub={
+                  completion.total === 0
+                    ? "No findings yet"
+                    : `${completion.reviewed} of ${completion.total} reviewed`
+                }
+                tone={completion.percent === 100 ? "success" : "info"}
+                href={completion.total === 0 ? undefined : "#findings-queue"}
+                onSelect={() => presetQueueFilter({ reviewStatus: "open" })}
+              />
+              <SummaryCard
+                label="Documents analyzed"
+                value={`${analyzedDocs}/${readyDocs.length}`}
+                sub={
+                  processingDocs > 0
+                    ? `${processingDocs} processing`
+                    : failedDocs > 0
+                      ? `${failedDocs} failed`
+                      : readyDocs.length === 0
+                        ? "No documents yet"
+                        : "All covered"
+                }
+                tone={
+                  readyDocs.length > 0 && analyzedDocs === readyDocs.length
+                    ? "success"
+                    : "neutral"
+                }
+                href="#documents"
+              />
+            </div>
+            {completion.total === 0 && readyDocs.length > 0 && analyzedDocs < readyDocs.length && (
+              <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+                No findings yet — {analyzedDocs} of {readyDocs.length} documents analyzed so
+                far. Zero findings is not a clearance until every document is covered.
+              </p>
+            )}
+            {completion.total === 0 &&
+              readyDocs.length > 0 &&
+              analyzedDocs === readyDocs.length && (
+                <p className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-800">
+                  No issues found across {readyDocs.length}{" "}
+                  {readyDocs.length === 1 ? "analyzed document" : "analyzed documents"}.
+                </p>
+              )}
+          </section>
+        )}
+
+      <div id="documents" className="scroll-mt-20">
       <Section
         label="Documents"
         description={`PDF files only, up to ${MAX_PDF_MB} MB each. Text extraction and analysis start automatically after upload. Open a document to follow its progress and review its findings.`}
@@ -776,6 +1024,15 @@ export default function MatterDetailPage() {
                   <p className="mt-0.5 text-red-700" role="alert">
                     {upload.message}
                   </p>
+                )}
+                {upload.phase === "error" && uploadReady && (
+                  <button
+                    type="button"
+                    onClick={() => void runUpload(API_URL, matterId, upload.file, upload.key)}
+                    className="mt-1 rounded text-[13px] font-medium text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                  >
+                    Retry upload
+                  </button>
                 )}
               </li>
             ))}
@@ -836,7 +1093,12 @@ export default function MatterDetailPage() {
                       <tr
                         key={doc.id}
                         id={`doc-${doc.id}`}
-                        className="scroll-mt-20 align-top hover:bg-slate-50"
+                        aria-busy={deletingId === doc.id}
+                        className={`scroll-mt-20 align-top hover:bg-slate-50 ${
+                          deletingId === doc.id
+                            ? "pointer-events-none opacity-60 blur-[2px]"
+                            : ""
+                        }`}
                       >
                         <td className="max-w-0 px-4 py-3">
                           <p className="truncate font-medium text-slate-900" title={doc.filename}>
@@ -863,11 +1125,22 @@ export default function MatterDetailPage() {
                               >
                                 {summary}
                               </Link>
+                              {reviewProgressSummary(findingsForDoc(doc.id)) !== null && (
+                                <span className="text-slate-500">
+                                  {" · "}
+                                  {reviewProgressSummary(findingsForDoc(doc.id))}
+                                </span>
+                              )}
                             </p>
                           ) : (
-                            run === undefined && (
+                            run === undefined &&
+                            (isAwaitingUpload(doc) ? (
+                              <p className="mt-0.5 text-[13px] text-slate-500" role="status">
+                                Uploading…
+                              </p>
+                            ) : (
                               <p className="mt-0.5 text-[13px] text-slate-500">Not analyzed yet</p>
-                            )
+                            ))
                           )}
                           {run?.stage === "failed" ? (
                             <p className="mt-0.5 truncate text-[13px] text-red-700" role="alert">
@@ -900,17 +1173,26 @@ export default function MatterDetailPage() {
                         </td>
                         <td className="whitespace-nowrap px-4 py-3">
                           {run === undefined ? (
-                            <>
-                              <Badge tone={EXTRACTION_TONE[doc.extractionStatus]}>
-                                {EXTRACTION_STATUS_LABELS[doc.extractionStatus]}
-                              </Badge>
+                            isAwaitingUpload(doc) ? (
+                              <>
+                                <Badge tone="info">Uploading</Badge>
+                                <p className="mt-1 text-xs tabular-nums text-slate-500">
+                                  Saving file…
+                                </p>
+                              </>
+                            ) : (
+                              <>
+                                <Badge tone={EXTRACTION_TONE[doc.extractionStatus]}>
+                                  {EXTRACTION_STATUS_LABELS[doc.extractionStatus]}
+                                </Badge>
                               {doc.extractionStatus === "completed" &&
                                 doc.pageCount !== undefined && (
                                   <p className="mt-1 text-xs tabular-nums text-slate-500">
                                     {doc.pageCount} {doc.pageCount === 1 ? "page" : "pages"}
                                   </p>
                                 )}
-                            </>
+                              </>
+                            )
                           ) : (
                             <>
                               <Badge tone={PROCESSING_TONE[run.stage]}>
@@ -953,9 +1235,14 @@ export default function MatterDetailPage() {
                             </Link>
                             <button
                               type="button"
-                              disabled={downloadingId === doc.id}
+                              disabled={downloadingId === doc.id || isAwaitingUpload(doc)}
+                              title={
+                                isAwaitingUpload(doc)
+                                  ? "Available once the file finishes uploading."
+                                  : undefined
+                              }
                               onClick={() => void onDownload(doc)}
-                              className="rounded text-blue-800 hover:text-blue-900 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
+                              className="rounded text-blue-800 hover:text-blue-900 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
                             >
                               {downloadingId === doc.id ? "Preparing…" : "Download"}
                             </button>
@@ -1030,6 +1317,179 @@ export default function MatterDetailPage() {
           </p>
         )}
       </Section>
+      </div>
+
+      <div id="findings-queue" className="scroll-mt-20">
+        <Section
+          label="Findings queue"
+          description="Every current finding across this matter's documents. Filters combine; select a finding's document to open it at the cited evidence."
+          action={
+            queueFindings.length > 0 ? (
+              <Button size="sm" variant="primary" onClick={() => setReviewOpen(true)}>
+                Start review
+              </Button>
+            ) : undefined
+          }
+        >
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div>
+              <label
+                htmlFor="queue-severity"
+                className="block text-[13px] font-medium text-slate-700"
+              >
+                Severity
+              </label>
+              <select
+                id="queue-severity"
+                value={queueFilters.severity}
+                onChange={(event) =>
+                  setQueueFilters((prev) => ({
+                    ...prev,
+                    severity: event.target.value as FindingFilters["severity"],
+                  }))
+                }
+                className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-800"
+              >
+                <option value="all">All severities</option>
+                {(Object.keys(SEVERITY_LABELS) as FindingSeverity[]).map((severity) => (
+                  <option key={severity} value={severity}>
+                    {SEVERITY_LABELS[severity]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="queue-category"
+                className="block text-[13px] font-medium text-slate-700"
+              >
+                Category
+              </label>
+              <select
+                id="queue-category"
+                value={queueFilters.category}
+                onChange={(event) =>
+                  setQueueFilters((prev) => ({
+                    ...prev,
+                    category: event.target.value as FindingFilters["category"],
+                  }))
+                }
+                className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-800"
+              >
+                <option value="all">All categories</option>
+                {FINDING_CATEGORY_ORDER.map((group) => (
+                  <option key={group.id} value={group.id}>
+                    {group.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="queue-status"
+                className="block text-[13px] font-medium text-slate-700"
+              >
+                Review status
+              </label>
+              <select
+                id="queue-status"
+                value={queueFilters.reviewStatus}
+                onChange={(event) =>
+                  setQueueFilters((prev) => ({
+                    ...prev,
+                    reviewStatus: event.target.value as FindingFilters["reviewStatus"],
+                  }))
+                }
+                className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-800"
+              >
+                <option value="all">All statuses</option>
+                {(Object.keys(REVIEW_STATUS_LABELS) as ReviewStatus[]).map((status) => (
+                  <option key={status} value={status}>
+                    {REVIEW_STATUS_LABELS[status]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="queue-doc" className="block text-[13px] font-medium text-slate-700">
+                Document
+              </label>
+              <select
+                id="queue-doc"
+                value={queueFilters.docId}
+                onChange={(event) =>
+                  setQueueFilters((prev) => ({ ...prev, docId: event.target.value }))
+                }
+                className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-800"
+              >
+                <option value="all">All documents</option>
+                {readyDocs.map((doc) => (
+                  <option key={doc.id} value={doc.id}>
+                    {doc.filename}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <p className="text-sm text-slate-600" role="status">
+              {queueFindings.length} of {readyFindings.length}{" "}
+              {readyFindings.length === 1 ? "finding" : "findings"} · {filterSummary}
+            </p>
+            {isFiltered(queueFilters) && (
+              <Button size="sm" onClick={() => setQueueFilters(EMPTY_FINDING_FILTERS)}>
+                Clear filters
+              </Button>
+            )}
+          </div>
+          {findings.status === "loading" && <LoadingLine>Loading findings…</LoadingLine>}
+          {findings.status === "error" && <ErrorBlock message={findings.message} />}
+          {findings.status === "ready" &&
+            (readyFindings.length === 0 ? (
+              <FindingsEmpty
+                input={{
+                  analysisInProgress: hasActiveRuns,
+                  failedCount: readyAnalyses.filter((item) => item.status === "failed").length,
+                  limitedCount: readyAnalyses.filter((item) => item.status === "limited").length,
+                  completedCount: readyAnalyses.filter((item) => item.status === "completed")
+                    .length,
+                }}
+              />
+            ) : queueFindings.length === 0 ? (
+              <EmptyState
+                title="No findings match these filters"
+                body="Loosen or clear the filters to see the rest of the queue."
+              />
+            ) : (
+              <FindingGroups
+                findings={queueFindings}
+                showFilename={true}
+                onReviewChange={(finding, reviewStatus) => {
+                  void onReviewChange(finding, reviewStatus).catch(() => undefined);
+                }}
+              />
+            ))}
+          {queueError !== null && (
+            <p className="mt-2 text-sm text-red-700" role="alert">
+              {queueError}
+            </p>
+          )}
+        </Section>
+      </div>
+
+      {reviewOpen && (
+        <ReviewQueue
+          findings={queueFindings}
+          initialId={null}
+          heading="Review queue"
+          subheading={`${queueFindings.length} findings · ${filterSummary}`}
+          onUpdate={onReviewChange}
+          onClose={() => setReviewOpen(false)}
+          docHref={(finding) =>
+            `/matters/${matterId}/docs/${finding.docId}?finding=${finding.id}`
+          }
+        />
+      )}
 
       {notice !== null && (
         <Toast

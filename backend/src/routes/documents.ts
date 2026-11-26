@@ -1,16 +1,13 @@
 import express, { Router, type Response } from "express";
 import { ObjectId } from "mongodb";
-import { analysisSettingsFromEnv } from "../ai/analysis.js";
-import { metaConfigFromEnv } from "../ai/metaClient.js";
+import { analysisSettingsFromEnv, type AnalysisSettings } from "../ai/analysis.js";
+import { metaConfigFromEnv, type MetaConfig } from "../ai/metaClient.js";
 import { getAnalysesCollections } from "../db/analyses.js";
-import { getDocumentsCollection } from "../db/documents.js";
+import { getDocumentsCollection, markUploadInterrupted } from "../db/documents.js";
 import { getMattersCollection } from "../db/matters.js";
 import { getProcessingRuns, startProcessingRun } from "../db/processing.js";
 import { driveProcessingRun, PROCESSING_STALE_MS } from "../processing/driver.js";
-import {
-  toProcessingRunResponse,
-  type ProcessingRun,
-} from "../models/processing.js";
+import { toProcessingRunResponse } from "../models/processing.js";
 import { scheduleAfterResponse } from "../processing/scheduler.js";
 import {
   extractionFailureMessage,
@@ -49,6 +46,33 @@ function documentObjectId(rawId: unknown): ObjectId | undefined {
   return typeof rawId === "string" ? parseDocumentId(rawId) : undefined;
 }
 
+/**
+ * Reject byte-dependent actions on documents whose upload never finished
+ * persisting. Fresh records are still being stored (409: wait and retry);
+ * failed ones can never heal (422: delete and re-upload). Returns true when
+ * the response was handled.
+ */
+function rejectUnstoredBytes(
+  res: Response,
+  doc: { bytesStored?: boolean; extractionStatus?: string },
+): boolean {
+  if (doc.bytesStored !== false) {
+    return false;
+  }
+  if (doc.extractionStatus === "failed") {
+    res.status(422).json({
+      error: "upload_incomplete",
+      message: "This file didn't finish uploading. Delete it and upload it again.",
+    });
+    return true;
+  }
+  res.status(409).json({
+    error: "upload_in_progress",
+    message: "This file is still uploading. Wait a moment and try again.",
+  });
+  return true;
+}
+
 function isEntityTooLarge(err: unknown): boolean {
   return (
     typeof err === "object" &&
@@ -57,11 +81,134 @@ function isEntityTooLarge(err: unknown): boolean {
   );
 }
 
+/** One satisfiable byte range with HTTP (inclusive) bounds. */
+export interface PdfByteRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * Parse a single-range `Range` header against a known body size. Returns
+ * undefined when the header is absent or should be leniently ignored
+ * (malformed, multi-range): callers then serve the full body with 200.
+ * Returns "unsatisfiable" when the range starts past the last byte: 416.
+ * Suffix (`bytes=-N`) and open-ended (`bytes=N-`) forms are supported; the
+ * end is clamped to the last byte.
+ */
+export function parseRangeHeader(
+  header: string | undefined,
+  size: number,
+): PdfByteRange | "unsatisfiable" | undefined {
+  if (header === undefined || size <= 0) {
+    return undefined;
+  }
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (match === null || (match[1] === "" && match[2] === "")) {
+    return undefined;
+  }
+  const first = match[1] as string;
+  const last = match[2] as string;
+  if (first === "") {
+    const suffix = Number.parseInt(last, 10);
+    if (!Number.isInteger(suffix) || suffix <= 0) {
+      return undefined;
+    }
+    return { start: Math.max(size - suffix, 0), end: size - 1 };
+  }
+  const start = Number.parseInt(first, 10);
+  if (!Number.isInteger(start) || start >= size) {
+    return start >= size ? "unsatisfiable" : undefined;
+  }
+  if (last === "") {
+    return { start, end: size - 1 };
+  }
+  const end = Number.parseInt(last, 10);
+  if (!Number.isInteger(end) || end < start) {
+    return "unsatisfiable";
+  }
+  return { start, end: Math.min(end, size - 1) };
+}
+
+export interface PersistUploadInput {
+  mongodbUri: string;
+  mongodbDbName: string;
+  meta: MetaConfig | undefined;
+  analysis: AnalysisSettings;
+  matterId: ObjectId;
+  fileId: ObjectId;
+  filename: string;
+  body: Buffer;
+}
+
+/**
+ * Finish an accepted upload after the 201 response: stream the buffered
+ * bytes into GridFS, flip the record to stored, then start processing. The
+ * client already went away happy, so every outcome must converge server
+ * state on its own: store failures fail the record as interrupted (nothing
+ * to retry against — the bytes only existed in this task), and a document
+ * deleted mid-store gets its orphaned bytes cleaned instead of resurrected.
+ * Never throws: the scheduler already guards, and double-logging helps no
+ * one — each failure is logged once, here, with its own scope.
+ */
+export async function persistUploadAndStart(input: PersistUploadInput): Promise<void> {
+  const { mongodbUri, mongodbDbName, meta, analysis, matterId, fileId } = input;
+  let db;
+  try {
+    db = await getDb(mongodbUri, mongodbDbName);
+  } catch (err: unknown) {
+    console.error("upload persist database unavailable:", err);
+    return;
+  }
+  try {
+    await storePdf(db, fileId, input.filename, input.body, matterId.toHexString());
+  } catch (err: unknown) {
+    console.error("upload bytes persist failed:", err);
+    await markUploadInterrupted(mongodbUri, mongodbDbName, fileId);
+    return;
+  }
+  try {
+    const documents = await getDocumentsCollection(mongodbUri, mongodbDbName);
+    const marked = await documents.updateOne(
+      { _id: fileId, bytesStored: false },
+      { $set: { bytesStored: true, updatedAt: new Date() } },
+    );
+    if (marked.matchedCount === 0) {
+      // Deleted mid-upload: remove the orphaned bytes again.
+      await deletePdf(db, fileId).catch((cleanupErr: unknown) => {
+        console.error("orphaned GridFS cleanup failed:", cleanupErr);
+      });
+      return;
+    }
+  } catch (err: unknown) {
+    // Bytes are stored but the flag is not; the recovery sweep fails the
+    // record as interrupted, and deleting it removes the bytes again.
+    console.error("upload stored-flag persist failed:", err);
+    return;
+  }
+  try {
+    const runs = await getProcessingRuns(mongodbUri, mongodbDbName);
+    const started = await startProcessingRun(runs, matterId, fileId);
+    // This already runs detached from the response, so drive inline: no
+    // second scheduling hop. A killed process leaves a queued run for the
+    // recovery sweep, exactly like the old schedule-then-drive path.
+    await driveProcessingRun(started.run._id, {
+      mongodbUri,
+      mongodbDbName,
+      meta,
+      analysis,
+    });
+  } catch (err: unknown) {
+    console.error("document processing schedule failed:", err);
+  }
+}
+
 export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
   // mergeParams exposes the :id segment from the /api/matters/:id/documents mount.
   const router = Router({ mergeParams: true });
 
-  // List documents for one matter, newest first.
+  // List documents for one matter, newest first. Pass
+  // `?includeText=false` to omit extracted text (polling, dashboards);
+  // fetch one document's text on demand from GET /:docId/text instead.
   router.get("/", (req, res) => {
     const matterId = matterObjectId(requestParam(req.params, "id"));
     if (matterId === undefined) {
@@ -94,6 +241,15 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
           .find({ matterId })
           .sort({ createdAt: -1 })
           .toArray();
+        if (req.query.includeText === "false") {
+          res.status(200).json(
+            docs.map((doc) => {
+              const { extractedText: _dropped, ...rest } = toDocumentResponse(doc);
+              return rest;
+            }),
+          );
+          return;
+        }
         res.status(200).json(docs.map(toDocumentResponse));
       } catch (err: unknown) {
         console.error("GET /api/matters/:id/documents failed:", err);
@@ -141,7 +297,6 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
           return;
         }
         try {
-          const db = await getDb(options.env.mongodbUri, options.env.mongodbDbName);
           const matters = await getMattersCollection(
             options.env.mongodbUri,
             options.env.mongodbDbName,
@@ -151,21 +306,14 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
             res.status(404).json({ error: "matter_not_found" });
             return;
           }
+          // Accept durably, persist in the background: the 201 only waits
+          // for the small metadata insert, never for the multi-megabyte
+          // GridFS streaming write (slow uplinks used to push the response
+          // past client and serverless timeouts even though the work
+          // completed). Clients discover the stored bytes and the
+          // processing run through their normal polling.
           const fileId = new ObjectId();
           const now = new Date();
-          try {
-            await storePdf(
-              db,
-              fileId,
-              parsed.value.filename,
-              parsed.value.body,
-              matterId.toHexString(),
-            );
-          } catch (err: unknown) {
-            console.error("document GridFS store failed:", err);
-            databaseUnavailable(res);
-            return;
-          }
           try {
             const documents = await getDocumentsCollection(
               options.env.mongodbUri,
@@ -180,36 +328,30 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
               createdAt: now,
               updatedAt: now,
               extractionStatus: "pending",
+              bytesStored: false,
             });
           } catch (err: unknown) {
             console.error("document metadata insert failed:", err);
-            await deletePdf(db, fileId).catch((cleanupErr: unknown) => {
-              console.error("orphaned GridFS cleanup failed:", cleanupErr);
-            });
             databaseUnavailable(res);
             return;
           }
-          let processing: ProcessingRun | null = null;
           try {
-            const runs = await getProcessingRuns(
-              options.env.mongodbUri as string,
-              options.env.mongodbDbName,
-            );
-            const started = await startProcessingRun(runs, matterId, fileId);
-            processing = toProcessingRunResponse(started.run);
-            const meta = metaConfigFromEnv(options.env);
             await scheduleAfterResponse(() =>
-              driveProcessingRun(started.run._id, {
+              persistUploadAndStart({
                 mongodbUri: options.env.mongodbUri as string,
                 mongodbDbName: options.env.mongodbDbName,
-                meta,
+                meta: metaConfigFromEnv(options.env),
                 analysis: analysisSettingsFromEnv(options.env),
+                matterId,
+                fileId,
+                filename: parsed.value.filename,
+                body: parsed.value.body,
               }),
             );
           } catch (err: unknown) {
-            // Upload succeeded; processing simply did not start. The client
-            // shows the document as not processed with a manual start action.
-            console.error("document processing schedule failed:", err);
+            // Nothing was scheduled; the recovery sweep fails the
+            // bytes-less record as interrupted so it never sits in limbo.
+            console.error("document upload persist scheduling failed:", err);
           }
           res.status(201).json({
             document: toDocumentResponse({
@@ -221,8 +363,9 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
               createdAt: now,
               updatedAt: now,
               extractionStatus: "pending",
+              bytesStored: false,
             }),
-            processing,
+            processing: null,
           });
         } catch (err: unknown) {
           console.error("POST /api/matters/:id/documents failed:", err);
@@ -232,7 +375,10 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
     },
   );
 
-  // Download one document's bytes.
+  // Download one document's bytes. Serves single HTTP ranges (206) so
+  // in-browser viewers can page into large PDFs, and honors `?inline=1`
+  // for display instead of attachment download. Malformed or multi-range
+  // requests fall back to the full body; only out-of-bounds ranges 416.
   router.get("/:docId/download", (req, res) => {
     const matterId = matterObjectId(requestParam(req.params, "id"));
     const docId = documentObjectId(req.params.docId);
@@ -259,14 +405,45 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
           res.status(404).json({ error: "document_not_found" });
           return;
         }
-        res.status(200);
+        if (rejectUnstoredBytes(res, doc)) {
+          return;
+        }
+        const inline = req.query.inline === "1";
+        const range = parseRangeHeader(req.header("range") ?? undefined, doc.sizeBytes);
+        if (range === "unsatisfiable") {
+          res.status(416);
+          res.setHeader("Content-Range", `bytes */${doc.sizeBytes}`);
+          res.end();
+          return;
+        }
         res.setHeader("Content-Type", "application/pdf");
-        res.setHeader("Content-Length", String(doc.sizeBytes));
+        res.setHeader("Accept-Ranges", "bytes");
+        // Range-aware viewers run cross-origin (fetch), so they must be
+        // allowed to read the range framing headers.
+        res.setHeader(
+          "Access-Control-Expose-Headers",
+          "Accept-Ranges, Content-Range, Content-Length, Content-Disposition",
+        );
         res.setHeader(
           "Content-Disposition",
-          `attachment; filename="${doc.filename}"`,
+          `${inline ? "inline" : "attachment"}; filename="${doc.filename}"`,
         );
-        const stream = openPdfDownload(db, docId);
+        if (range !== undefined) {
+          res.status(206);
+          res.setHeader(
+            "Content-Range",
+            `bytes ${range.start}-${range.end}/${doc.sizeBytes}`,
+          );
+          res.setHeader("Content-Length", String(range.end - range.start + 1));
+        } else {
+          res.status(200);
+          res.setHeader("Content-Length", String(doc.sizeBytes));
+        }
+        // GridFS bounds are end-exclusive; HTTP bounds are end-inclusive.
+        const stream =
+          range === undefined
+            ? openPdfDownload(db, docId)
+            : openPdfDownload(db, docId, { start: range.start, end: range.end + 1 });
         stream.once("error", (err: unknown) => {
           console.error("document GridFS download failed:", err);
           if (!res.headersSent) {
@@ -281,6 +458,49 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
           "GET /api/matters/:id/documents/:docId/download failed:",
           err,
         );
+        databaseUnavailable(res);
+      }
+    })();
+  });
+
+  // Fetch one document's extracted text on demand, without the list payload.
+  // Always answers the current extraction state; text fields are present
+  // only for completed extractions.
+  router.get("/:docId/text", (req, res) => {
+    const matterId = matterObjectId(requestParam(req.params, "id"));
+    const docId = documentObjectId(req.params.docId);
+    if (matterId === undefined || docId === undefined) {
+      res.status(400).json({
+        error: "invalid_id",
+        message: "Matter and document ids must be 24-character hex strings.",
+      });
+      return;
+    }
+    void (async () => {
+      if (options.env.mongodbUri === undefined) {
+        databaseUnavailable(res);
+        return;
+      }
+      try {
+        const documents = await getDocumentsCollection(
+          options.env.mongodbUri,
+          options.env.mongodbDbName,
+        );
+        const doc = await documents.findOne({ _id: docId, matterId });
+        if (doc === null) {
+          res.status(404).json({ error: "document_not_found" });
+          return;
+        }
+        res.status(200).json({
+          extractionStatus: doc.extractionStatus ?? "pending",
+          ...(doc.extractedText !== undefined ? { extractedText: doc.extractedText } : {}),
+          ...(doc.pageCount !== undefined ? { pageCount: doc.pageCount } : {}),
+          ...(doc.extractedAt !== undefined
+            ? { extractedAt: doc.extractedAt.toISOString() }
+            : {}),
+        });
+      } catch (err: unknown) {
+        console.error("GET /api/matters/:id/documents/:docId/text failed:", err);
         databaseUnavailable(res);
       }
     })();
@@ -310,6 +530,10 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
           options.env.mongodbUri,
           options.env.mongodbDbName,
         );
+        const doc = await documents.findOne({ _id: docId, matterId });
+        if (doc !== null && rejectUnstoredBytes(res, doc)) {
+          return;
+        }
         const outcome = await runExtractionJob(documents, db, matterId, docId);
         if (!outcome.ok) {
           switch (outcome.code) {
@@ -370,6 +594,9 @@ export function createDocumentsRouter(options: DocumentsRouterOptions): Router {
         const doc = await documents.findOne({ _id: docId, matterId });
         if (doc === null) {
           res.status(404).json({ error: "document_not_found" });
+          return;
+        }
+        if (rejectUnstoredBytes(res, doc)) {
           return;
         }
         const runs = await getProcessingRuns(

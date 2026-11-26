@@ -30,3 +30,6 @@ Thumbs.db
 # TypeScript
 *.tsbuildinfo
 backend/atlas-credentials.env
+
+# Built pdf.js worker (copied from node_modules on postinstall, never committed)
+frontend/public/pdf.worker*.mjs

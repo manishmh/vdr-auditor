@@ -233,14 +233,21 @@ curl http://localhost:4000/api/matters/$MID/findings
 
 ## Automatic processing + global progress
 
-Uploading a PDF runs the whole pipeline without further clicks: the
-response returns `{ document, processing }` at once, while a persisted
+Uploading a PDF runs the whole pipeline without further clicks. The
+upload response returns 201 as soon as the metadata record is stored —
+it never waits for the multi-megabyte byte transfer, so slow uplinks
+cannot push it past client or serverless timeouts. The bytes persist in
+the background (`bytesStored: false` until they land), then a persisted
 run in the `processing_runs` collection advances `queued → extracting →
 analyzing → completed` (or `completed_with_limits`, or `failed` with a
 safe error code). Analysis starts only after extraction succeeds;
 textless PDFs end as `completed_with_limits`, unreadable ones
 as `failed`. Retrying a failure reuses completed extraction and never
-erases previous successful findings.
+erases previous successful findings. Uploads whose bytes never arrive
+(dead process, killed function) are failed as `upload_interrupted` by
+the recovery sweep; byte-dependent endpoints answer 409
+`upload_in_progress` (still storing) or 422 `upload_incomplete`
+(interrupted: delete and re-upload).
 
 - `POST /api/matters/:id/documents/:docId/process` starts or retries
   processing. Idempotent: an active run is returned (200) instead of
@@ -339,6 +346,10 @@ never invent or commit real deployment URLs.
 
 Notes:
 
+- Vercel's serverless request-size limit (~4.5 MB on Hobby/Pro) applies
+  before the app's own 25 MB PDF cap: larger files are rejected by the
+  platform with a non-JSON 413, which the client reports as "too large
+  to upload". Files under the platform limit upload normally.
 - The MongoDB client is a shared lazy singleton: one client per process,
   reused across warm function invocations, and never one connection per
   request. No request depends on a permanently running process or

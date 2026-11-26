@@ -2,6 +2,7 @@ import {
   MattersApiError,
   bustApiCache,
   expectArray,
+  expectObject,
   requestJson,
   type RequestOptions,
 } from "./matters";
@@ -28,8 +29,25 @@ export interface MatterDocument {
   extractionStatus: DocumentExtractionStatus;
   extractedText?: string;
   pageCount?: number;
+  /** Leading blank pages trimmed at extraction; absent on older records. */
+  pageOffset?: number;
+  /**
+   * False while the uploaded bytes are still being persisted after the
+   * 201 response. Absent means stored (older records predate the flag).
+   */
+  bytesStored?: boolean;
   extractedAt?: string;
   extractionError?: string;
+}
+
+/**
+ * True while a document's bytes are still being persisted in the
+ * background. Only an explicit false counts: records written before the
+ * flag existed (or served by an older backend) are treated as stored, and
+ * terminally failed uploads are a delete-and-re-upload state, not a wait.
+ */
+export function isAwaitingUpload(doc: MatterDocument): boolean {
+  return doc.bytesStored === false && doc.extractionStatus !== "failed";
 }
 
 export const EXTRACTION_STATUS_LABELS: Record<DocumentExtractionStatus, string> = {
@@ -48,25 +66,50 @@ export function extractionErrorMessage(code: string | undefined): string {
       return "This PDF exceeds extraction limits.";
     case "unparseable":
       return "This PDF could not be read.";
+    case "upload_interrupted":
+      return "The upload was interrupted before the file was saved. Delete it and upload again.";
     default:
       return "Extraction failed.";
   }
 }
 
+export interface ListDocumentsOptions extends RequestOptions {
+  /** Omit extracted text (dashboards, polling); fetch it on demand instead. */
+  includeText?: boolean;
+}
+
 export async function listDocuments(
   apiUrl: string,
   matterId: string,
-  options: RequestOptions = {},
+  options: ListDocumentsOptions = {},
 ): Promise<MatterDocument[]> {
+  const { includeText, ...requestOptions } = options;
+  const path =
+    includeText === false
+      ? `/api/matters/${matterId}/documents?includeText=false`
+      : `/api/matters/${matterId}/documents`;
   return expectArray<MatterDocument>(
-    await requestJson<unknown>(
-      apiUrl,
-      `/api/matters/${matterId}/documents`,
-      undefined,
-      undefined,
-      options,
-    ),
+    await requestJson<unknown>(apiUrl, path, undefined, undefined, requestOptions),
     "documents",
+  );
+}
+
+export interface DocumentText {
+  extractionStatus: DocumentExtractionStatus;
+  extractedText?: string;
+  pageCount?: number;
+  extractedAt?: string;
+}
+
+/** Fetch one document's extracted text on demand (never during polling). */
+export async function getDocumentText(
+  apiUrl: string,
+  matterId: string,
+  docId: string,
+): Promise<DocumentText> {
+  return expectObject<DocumentText>(
+    await requestJson<unknown>(apiUrl, `/api/matters/${matterId}/documents/${docId}/text`),
+    "extracted text",
   );
 }
 
@@ -121,6 +164,7 @@ export function uploadDocument(
         }
         return;
       }
+      logUploadFailure(file, xhr.status, xhr.responseText);
       reject(uploadError(xhr.status, xhr.responseText));
     };
     xhr.onerror = () => {
@@ -134,35 +178,87 @@ export function uploadDocument(
   });
 }
 
-function uploadError(httpStatus: number, responseText: string): MattersApiError {
+/**
+ * Developer-only console diagnostic for failed uploads: status, body shape,
+ * and file metadata. Bodies are never logged: they can echo file bytes on
+ * platform errors, and names/sizes are all support needs.
+ */
+function logUploadFailure(file: File, httpStatus: number, responseText: string): void {
+  let bodyShape = "empty";
+  if (responseText !== "") {
+    try {
+      const parsed: unknown = JSON.parse(responseText);
+      bodyShape =
+        typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+          ? `json:${String((parsed as { error?: unknown }).error ?? "no-code")}`
+          : Array.isArray(parsed)
+            ? "array"
+            : typeof parsed;
+    } catch {
+      bodyShape = responseText.trimStart().startsWith("<") ? "html" : "text";
+    }
+  }
+  console.error(
+    JSON.stringify({
+      scope: "vdr-upload",
+      httpStatus,
+      body: bodyShape,
+      filename: file.name.length > 80 ? `${file.name.slice(0, 80)}…` : file.name,
+      sizeBytes: file.size,
+    }),
+  );
+}
+
+/**
+ * Map an upload failure to user-facing copy. Status-first: platform and
+ * gateway failures (413/502/503/504) often carry HTML or empty bodies, so
+ * the status is more reliable than parsing. Exported for tests.
+ */
+export function uploadError(httpStatus: number, responseText: string): MattersApiError {
+  let error: unknown;
+  let tooLargeIssue = false;
   try {
     const body = JSON.parse(responseText) as {
       error?: unknown;
       issues?: Array<{ code?: unknown }>;
     };
-    if (body.error === "file_too_large") {
-      return new MattersApiError(
-        "That file is too large. Please choose a smaller PDF.",
-        httpStatus,
-      );
-    }
-    if (body.error === "validation_error" && Array.isArray(body.issues)) {
-      const tooLarge = body.issues.some((issue) => issue.code === "file_too_large");
-      return new MattersApiError(
-        tooLarge
-          ? "That file is too large. Please choose a smaller PDF."
-          : "That file isn't a valid PDF. Please choose another file.",
-        httpStatus,
-      );
-    }
-    if (body.error === "matter_not_found" || body.error === "not_found") {
-      return new MattersApiError(
-        "We couldn't find that matter. It may have been deleted.",
-        httpStatus,
-      );
-    }
+    error = body.error;
+    tooLargeIssue =
+      body.error === "validation_error" &&
+      Array.isArray(body.issues) &&
+      body.issues.some((issue) => issue.code === "file_too_large");
   } catch {
-    // Fall through to the generic message below.
+    error = undefined;
+  }
+  if (httpStatus === 413 || error === "file_too_large" || tooLargeIssue) {
+    return new MattersApiError(
+      "That file is too large to upload. Please choose a smaller PDF.",
+      httpStatus,
+    );
+  }
+  if (error === "validation_error") {
+    return new MattersApiError(
+      "That file isn't a valid PDF. Please choose another file.",
+      httpStatus,
+    );
+  }
+  if (error === "matter_not_found" || error === "not_found") {
+    return new MattersApiError(
+      "We couldn't find that matter. It may have been deleted.",
+      httpStatus,
+    );
+  }
+  if (httpStatus === 503 || error === "database_unavailable") {
+    return new MattersApiError(
+      "The server is busy right now. Please wait a moment and try again.",
+      httpStatus,
+    );
+  }
+  if (httpStatus === 502 || httpStatus === 504) {
+    return new MattersApiError(
+      "The server timed out before the upload finished. Please try again.",
+      httpStatus,
+    );
   }
   return new MattersApiError("The upload failed. Please try again.", httpStatus);
 }
@@ -188,7 +284,9 @@ export async function downloadDocument(
     throw new MattersApiError(
       res.status === 404
         ? "That document is no longer available. It may have been deleted."
-        : "Couldn't download this file. Please try again.",
+        : res.status === 409
+          ? "This file is still uploading. Please wait a moment and try again."
+          : "Couldn't download this file. Please try again.",
       res.status,
     );
   }

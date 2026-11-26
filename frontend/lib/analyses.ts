@@ -47,6 +47,8 @@ export interface AnalysisRun {
 
 export interface DocAnalysis extends AnalysisRun {
   filename?: string;
+  /** Latest run with reviewable output, or null when nothing succeeded yet. */
+  current: AnalysisRun | null;
 }
 
 export const FINDING_CATEGORY_ORDER: Array<{

@@ -16,6 +16,12 @@ export type ExtractionResult =
       pages: string[];
       pageCount: number;
       text: string;
+      /**
+       * Leading blank pages trimmed from `pages`. Stored page numbers are
+       * relative to the trimmed text; add this offset to reach real PDF
+       * page numbers (e.g. in a document viewer).
+       */
+      pageOffset: number;
     }
   | { ok: true; status: "no_text"; pageCount: number }
   | { ok: false; code: ExtractionFailureCode };
@@ -128,8 +134,10 @@ export async function extractPdfText(
       }
       pages.push(pageText);
     }
+    let pageOffset = 0;
     while (pages.length > 0 && pages[0] === "") {
       pages.shift();
+      pageOffset += 1;
     }
     while (pages.length > 0 && pages[pages.length - 1] === "") {
       pages.pop();
@@ -138,7 +146,7 @@ export async function extractPdfText(
     if (text.replace(/\s/g, "").length === 0) {
       return { ok: true, status: "no_text", pageCount };
     }
-    return { ok: true, status: "completed", pages, pageCount, text };
+    return { ok: true, status: "completed", pages, pageCount, text, pageOffset };
   } finally {
     try {
       await doc.cleanup();

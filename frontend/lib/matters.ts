@@ -144,6 +144,10 @@ function friendlyErrorMessage(code: string, issues: string | undefined): string 
     case "no_usable_text":
     case "extraction_failed":
       return "We couldn't read any text from this PDF, so there was nothing to analyze.";
+    case "upload_in_progress":
+      return "This file is still uploading. Please wait a moment and try again.";
+    case "upload_incomplete":
+      return "This file didn't finish uploading. Delete it and upload it again.";
     default:
       return undefined;
   }
