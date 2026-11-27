@@ -58,6 +58,35 @@ describe("extractPdfText with real PDFs", () => {
   });
 });
 
+describe("extractPdfText page trimming", () => {
+  it("reports zero offset when no pages are trimmed", async () => {
+    const result = await extractPdfText(new Uint8Array([1, 2, 3]), {
+      load: fakeLoader([["one"], ["two"]]),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok && result.status === "completed") {
+      expect(result.pages).toHaveLength(2);
+      expect(result.pageOffset).toBe(0);
+    } else {
+      expect.unreachable("expected completed extraction");
+    }
+  });
+
+  it("counts leading blank pages as the offset, trailing as unnumbered", async () => {
+    const result = await extractPdfText(new Uint8Array([1, 2, 3]), {
+      load: fakeLoader([[], [], ["body"], []]),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok && result.status === "completed") {
+      expect(result.pageCount).toBe(4);
+      expect(result.pages).toEqual(["body"]);
+      expect(result.pageOffset).toBe(2);
+    } else {
+      expect.unreachable("expected completed extraction");
+    }
+  });
+});
+
 describe("extractPdfText input handling", () => {
   it("accepts a raw Node Buffer", async () => {
     const result = await extractPdfText(buildPdf([["buffered"]]));

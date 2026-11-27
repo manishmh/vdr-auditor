@@ -32,10 +32,15 @@ export async function storePdf(
 
 /**
  * Open a readable stream for stored PDF bytes. Missing files surface as a
- * stream error for the caller to handle.
+ * stream error for the caller to handle. Optional byte bounds serve HTTP
+ * ranges: `start` is inclusive, `end` is exclusive per the driver.
  */
-export function openPdfDownload(db: Db, fileId: ObjectId): NodeJS.ReadableStream {
-  return pdfBucket(db).openDownloadStream(fileId);
+export function openPdfDownload(
+  db: Db,
+  fileId: ObjectId,
+  options: { start?: number; end?: number } = {},
+): NodeJS.ReadableStream {
+  return pdfBucket(db).openDownloadStream(fileId, options);
 }
 
 function isFileNotFoundError(err: unknown): boolean {

@@ -254,10 +254,19 @@ export function createAnalysesRouter(options: AnalysesRouterOptions): Router {
         );
         const allRuns = await runs.find({ matterId }).sort({ startedAt: -1 }).toArray();
         const latestByDoc = new Map<string, (typeof allRuns)[number]>();
+        // Latest run with reviewable output per document: a newer failed or
+        // still-running attempt never hides the results findings come from.
+        const currentByDoc = new Map<string, (typeof allRuns)[number]>();
         for (const run of allRuns) {
           const key = run.docId.toHexString();
           if (!latestByDoc.has(key)) {
             latestByDoc.set(key, run);
+          }
+          if (
+            (run.status === "completed" || run.status === "limited") &&
+            !currentByDoc.has(key)
+          ) {
+            currentByDoc.set(key, run);
           }
         }
         const docs = await documents
@@ -267,10 +276,14 @@ export function createAnalysesRouter(options: AnalysesRouterOptions): Router {
           .toArray();
         const names = new Map(docs.map((doc) => [doc._id.toHexString(), doc.filename]));
         res.status(200).json({
-          analyses: [...latestByDoc.values()].map((run) => ({
-            ...toAnalysisRunResponse(run),
-            filename: names.get(run.docId.toHexString()),
-          })),
+          analyses: [...latestByDoc.values()].map((run) => {
+            const current = currentByDoc.get(run.docId.toHexString());
+            return {
+              ...toAnalysisRunResponse(run),
+              filename: names.get(run.docId.toHexString()),
+              current: current === undefined ? null : toAnalysisRunResponse(current),
+            };
+          }),
         });
       } catch (err: unknown) {
         console.error("GET /api/matters/:id/analyses failed:", err);

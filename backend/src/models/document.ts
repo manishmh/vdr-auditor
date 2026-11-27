@@ -28,6 +28,18 @@ export interface DocumentRecord {
   extractionStatus?: DocumentExtractionStatus;
   extractedText?: string;
   pageCount?: number;
+  /**
+   * Leading blank pages trimmed during extraction. Stored finding page
+   * numbers are relative to the trimmed text; add this to reach real PDF
+   * pages. Absent on records extracted before the offset was tracked.
+   */
+  pageOffset?: number;
+  /**
+   * False while the uploaded bytes are still being persisted after the
+   * 201 response. Absent means stored (all records written before async
+   * persistence existed, which waited for the bytes before responding).
+   */
+  bytesStored?: boolean;
   extractedAt?: Date;
   extractionError?: string;
 }
@@ -44,6 +56,8 @@ export interface MatterDocument {
   extractionStatus: DocumentExtractionStatus;
   extractedText?: string;
   pageCount?: number;
+  pageOffset?: number;
+  bytesStored?: boolean;
   extractedAt?: string;
   extractionError?: string;
 }
@@ -189,6 +203,8 @@ export function toDocumentResponse(doc: DocumentRecord): MatterDocument {
     extractionStatus: doc.extractionStatus ?? "pending",
     extractedText: doc.extractedText,
     pageCount: doc.pageCount,
+    pageOffset: doc.pageOffset,
+    bytesStored: doc.bytesStored,
     extractedAt: doc.extractedAt?.toISOString(),
     extractionError: doc.extractionError,
   };

@@ -338,6 +338,59 @@ describe("recoverProcessingRuns", () => {
     });
     expect(result.checked).toBe(2);
   });
+
+  it("fails uploads whose bytes never arrived, sparing fresh and stored docs", async () => {
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    fake.state.documents.push(
+      {
+        _id: new ObjectId("64f1a2b3c4d5e6f7890abc10"),
+        matterId: new ObjectId(MATTER_ID),
+        filename: "stuck.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 100,
+        createdAt: old,
+        updatedAt: old,
+        extractionStatus: "pending",
+        bytesStored: false,
+      },
+      {
+        _id: new ObjectId("64f1a2b3c4d5e6f7890abc11"),
+        matterId: new ObjectId(MATTER_ID),
+        filename: "fresh.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 100,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        extractionStatus: "pending",
+        bytesStored: false,
+      },
+      {
+        _id: new ObjectId("64f1a2b3c4d5e6f7890abc12"),
+        matterId: new ObjectId(MATTER_ID),
+        filename: "stored.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 100,
+        createdAt: old,
+        updatedAt: old,
+        extractionStatus: "pending",
+        bytesStored: true,
+      },
+    );
+    const result = await recoverProcessingRuns({ ...baseRecovery(), includeFresh: false });
+    expect(result.errors).toBe(0);
+    const byId = (id: string) =>
+      fake.state.documents.find((d) => d._id.toHexString() === id);
+    expect(byId("64f1a2b3c4d5e6f7890abc10")).toMatchObject({
+      extractionStatus: "failed",
+      extractionError: "upload_interrupted",
+    });
+    expect(byId("64f1a2b3c4d5e6f7890abc11")).toMatchObject({
+      extractionStatus: "pending",
+    });
+    expect(byId("64f1a2b3c4d5e6f7890abc12")).toMatchObject({
+      extractionStatus: "pending",
+    });
+  });
 });
 
 describe("startRecoveryLoop", () => {

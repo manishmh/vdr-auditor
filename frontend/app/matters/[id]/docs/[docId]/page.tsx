@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
+  REVIEW_STATUS_LABELS,
+  SEVERITY_LABELS,
   listAnalyses,
   listDocAnalyses,
   listFindings,
@@ -14,7 +16,14 @@ import {
   type FindingSeverity,
   type ReviewStatus,
 } from "@/lib/analyses";
-import { formatBytes, formatDate } from "@/lib/format";
+import { formatBytes, formatDate, formatDuration } from "@/lib/format";
+import {
+  EMPTY_FINDING_FILTERS,
+  applyFindingFilters,
+  describeFindingFilters,
+  isFiltered,
+} from "@/lib/findingsView";
+import { storedPageToPdfPage } from "@/lib/pdfText";
 import {
   APP_CONFIG_ERROR_MESSAGE,
   getMatter,
@@ -26,8 +35,11 @@ import {
   deleteDocument,
   downloadDocument,
   extractionErrorMessage,
+  getDocumentText,
+  isAwaitingUpload,
   listDocuments,
   type DocumentExtractionStatus,
+  type DocumentText,
   type MatterDocument,
 } from "@/lib/documents";
 import {
@@ -54,6 +66,8 @@ import {
   type BadgeTone,
 } from "../../../../components/ui";
 import { FindingGroups, FindingsEmpty } from "../../../../components/findings";
+import PdfViewer, { type HighlightReport } from "../../../../components/PdfViewer";
+import ReviewQueue from "../../../../components/ReviewQueue";
 
 const API_URL = process.env["NEXT_PUBLIC_API_URL"];
 const POLL_MS = 4000;
@@ -137,6 +151,20 @@ function ExtractedText({ text }: { text: string }) {
 }
 
 export default function DocumentDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="mx-auto max-w-7xl px-6 py-8">
+          <LoadingLine>Loading document…</LoadingLine>
+        </main>
+      }
+    >
+      <DocumentDetail />
+    </Suspense>
+  );
+}
+
+function DocumentDetail() {
   const params = useParams();
   const router = useRouter();
   const rawMatterId = params?.id;
@@ -168,6 +196,18 @@ export default function DocumentDetailPage() {
   );
   const [history, setHistory] = useState<AnalysisRun[]>([]);
   const [severityFilter, setSeverityFilter] = useState<"all" | FindingSeverity>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | ReviewStatus>("all");
+  const searchParams = useSearchParams();
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(() =>
+    searchParams.get("finding"),
+  );
+  const [manualPage, setManualPage] = useState(1);
+  const [viewerNumPages, setViewerNumPages] = useState<number | null>(null);
+  const [highlight, setHighlight] = useState<HighlightReport | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [textOpen, setTextOpen] = useState(false);
+  const [docText, setDocText] = useState<LoadState<DocumentText> | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -228,11 +268,12 @@ export default function DocumentDetailPage() {
         }
       };
       if (!silent) {
-        // First load: everything in parallel for speed.
+        // First load: everything in parallel for speed. Documents arrive
+        // without extracted text; text loads on demand from its own section.
         const [runsRes, analysesRes, docsRes, findingsRes, historyRes] = await Promise.allSettled([
           listProcessingRuns(apiUrl, id),
           listAnalyses(apiUrl, id),
-          listDocuments(apiUrl, id),
+          listDocuments(apiUrl, id, { includeText: false }),
           listFindings(apiUrl, id),
           listDocAnalyses(apiUrl, id, targetDocId),
         ]);
@@ -281,7 +322,7 @@ export default function DocumentDetailPage() {
         return;
       }
       const [docsRes, findingsRes, historyRes] = await Promise.allSettled([
-        listDocuments(apiUrl, id, { fresh: true }),
+        listDocuments(apiUrl, id, { fresh: true, includeText: false }),
         listFindings(apiUrl, id),
         listDocAnalyses(apiUrl, id, targetDocId),
       ]);
@@ -344,10 +385,41 @@ export default function DocumentDetailPage() {
       ? findings.value.filter((item) => item.docId === docId)
       : [];
   const analysisInProgress = runActive || runningAnalysis !== undefined;
-  const visibleFindings =
-    severityFilter === "all"
-      ? docFindings
-      : docFindings.filter((item) => item.severity === severityFilter);
+  // Uploads acknowledge before their bytes land; keep polling until the
+  // bytes arrive (processing then starts) or the upload fails.
+  const awaitingUpload =
+    doc.status === "ready" ? isAwaitingUpload(doc.value) : false;
+  const railFilters = {
+    ...EMPTY_FINDING_FILTERS,
+    severity: severityFilter,
+    reviewStatus: statusFilter,
+  };
+  const visibleFindings = applyFindingFilters(docFindings, railFilters);
+  const railFiltered = isFiltered(railFilters);
+  const selectedFinding =
+    selectedFindingId === null
+      ? undefined
+      : docFindings.find((item) => item.id === selectedFindingId);
+  // The viewer follows the selected finding's real PDF page; manual page
+  // controls deselect and take over instead. Fully derived: no sync effects.
+  const viewerLength =
+    viewerNumPages ?? (doc.status === "ready" ? (doc.value.pageCount ?? null) : null);
+  const selectedPdfPage = storedPageToPdfPage(
+    selectedFinding?.page ?? null,
+    doc.status === "ready" ? doc.value.pageOffset : undefined,
+    viewerLength,
+  );
+  const viewerPage = selectedPdfPage ?? manualPage;
+  const viewerExcerpt =
+    selectedFinding === undefined || selectedFinding.page === null
+      ? null
+      : selectedFinding.excerpt;
+  const railFilterSummary = describeFindingFilters(railFilters, {
+    severityLabel: (severity) => SEVERITY_LABELS[severity],
+    categoryLabel: (category) => category,
+    statusLabel: (status) => REVIEW_STATUS_LABELS[status],
+    docName: () => undefined,
+  });
   const severityCounts: Record<FindingSeverity, number> = {
     high: docFindings.filter((item) => item.severity === "high").length,
     medium: docFindings.filter((item) => item.severity === "medium").length,
@@ -361,7 +433,12 @@ export default function DocumentDetailPage() {
   // document, so a fixed 4s cadence would fire hundreds of requests per
   // document for no new information.
   useEffect(() => {
-    if (!idsReady || API_URL === undefined || API_URL === "" || !analysisInProgress) {
+    if (
+      !idsReady ||
+      API_URL === undefined ||
+      API_URL === "" ||
+      (!analysisInProgress && !awaitingUpload)
+    ) {
       return;
     }
     const apiUrl: string = API_URL;
@@ -405,9 +482,36 @@ export default function DocumentDetailPage() {
         clearTimeout(timer);
       }
     };
-  }, [matterId, docId, idsReady, analysisInProgress, loadAll]);
+  }, [matterId, docId, idsReady, analysisInProgress, awaitingUpload, loadAll]);
 
   const ready = API_URL !== undefined && API_URL !== "" && idsReady;
+  const viewerUrl =
+    ready && doc.status === "ready"
+      ? `${API_URL}/api/matters/${matterId}/documents/${docId}/download?inline=1`
+      : null;
+
+  const selectFinding = (finding: Finding): void => {
+    setHighlight(null);
+    setSelectedFindingId(finding.id);
+  };
+
+  const onViewerPageChange = (pageNumber: number): void => {
+    // Manual navigation takes over: the viewer stays where the user put it.
+    setManualPage(pageNumber);
+    setSelectedFindingId(null);
+    setHighlight(null);
+  };
+
+  // Bring a selected (or deep-linked) card into view without stealing
+  // focus. Re-runs as findings load so deep links land after the fetch.
+  useEffect(() => {
+    if (selectedFindingId === null) {
+      return;
+    }
+    document
+      .getElementById(`finding-card-${selectedFindingId}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selectedFindingId, docFindings.length]);
 
   const onDownload = async () => {
     if (!ready || doc.status !== "ready") {
@@ -486,12 +590,42 @@ export default function DocumentDetailPage() {
       );
     } catch (err: unknown) {
       setFindingsError(errorMessage(err, "Couldn't save that change. Please try again."));
+      throw err instanceof Error ? err : new Error("Couldn't save that change.");
+    }
+  };
+
+  const toggleText = (): void => {
+    const next = !textOpen;
+    setTextOpen(next);
+    if (next && docText === null && ready) {
+      setDocText({ status: "loading" });
+      void getDocumentText(API_URL, matterId, docId).then(
+        (value) => {
+          setDocText({ status: "ready", value });
+        },
+        (err: unknown) => {
+          setDocText({
+            status: "error",
+            message: errorMessage(err, "Couldn't load extracted text. Please try again."),
+          });
+        },
+      );
     }
   };
 
   const failedAnalyses = docAnalyses.filter((item) => item.status === "failed");
   const limitedAnalyses = docAnalyses.filter((item) => item.status === "limited");
   const completedAnalyses = docAnalyses.filter((item) => item.status === "completed");
+  const latestHistory = history[0];
+  const currentHistory = history.find(
+    (item) => item.status === "completed" || item.status === "limited",
+  );
+  const historyDuration =
+    latestHistory?.finishedAt === undefined
+      ? null
+      : formatDuration(
+          Date.parse(latestHistory.finishedAt) - Date.parse(latestHistory.startedAt),
+        );
   const stepIndex = stepIndexFor(run);
   const progressTotal = runningAnalysis?.sectionsTotal ?? 0;
   const progressDone = runningAnalysis?.sectionsAnalyzed ?? 0;
@@ -501,7 +635,7 @@ export default function DocumentDetailPage() {
   const showRetry = run?.stage === "failed" || runStale;
 
   return (
-    <main className="mx-auto max-w-6xl px-6 py-8">
+    <main className="mx-auto max-w-7xl px-6 py-8">
       <nav aria-label="Breadcrumb">
         <ol className="flex items-center gap-2 text-sm">
           <li>
@@ -568,9 +702,13 @@ export default function DocumentDetailPage() {
             </div>
             <div className="flex flex-col items-end gap-2">
               {run === undefined ? (
-                <Badge tone={EXTRACTION_TONE[doc.value.extractionStatus]}>
-                  {EXTRACTION_STATUS_LABELS[doc.value.extractionStatus]}
-                </Badge>
+                awaitingUpload ? (
+                  <Badge tone="info">Uploading</Badge>
+                ) : (
+                  <Badge tone={EXTRACTION_TONE[doc.value.extractionStatus]}>
+                    {EXTRACTION_STATUS_LABELS[doc.value.extractionStatus]}
+                  </Badge>
+                )
               ) : (
                 <Badge tone={PROCESSING_TONE[run.stage]}>
                   {PROCESSING_STAGE_LABELS[run.stage]}
@@ -580,7 +718,12 @@ export default function DocumentDetailPage() {
           </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={downloading} onClick={() => void onDownload()}>
+            <Button
+              size="sm"
+              disabled={downloading || awaitingUpload}
+              title={awaitingUpload ? "Available once the file finishes uploading." : undefined}
+              onClick={() => void onDownload()}
+            >
               {downloading ? "Preparing…" : "Download"}
             </Button>
             {showRetry && (
@@ -682,175 +825,342 @@ export default function DocumentDetailPage() {
             </section>
           )}
 
-          <Section
-            label="Findings"
-            description="Due-diligence issues in this document, each linked to its evidence."
-            action={
-              docFindings.length > 0 ? (
-                <div className="flex items-center gap-1 text-[13px]" role="group" aria-label="Filter by severity">
-                  {(
-                    [
-                      ["all", `All (${docFindings.length})`],
-                      ["high", `High (${severityCounts.high})`],
-                      ["medium", `Medium (${severityCounts.medium})`],
-                      ["low", `Low (${severityCounts.low})`],
-                    ] as Array<["all" | FindingSeverity, string]>
-                  ).map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => setSeverityFilter(value)}
-                      aria-pressed={severityFilter === value}
-                      className={`rounded-full px-2.5 py-1 font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800 ${
-                        severityFilter === value
-                          ? "bg-slate-900 text-white"
-                          : "text-slate-600 hover:bg-slate-100"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              ) : undefined
-            }
-          >
-            {(analyses.status === "loading" || findings.status === "loading") && (
-              <LoadingLine>Loading findings…</LoadingLine>
-            )}
-            {(analyses.status === "error" || findings.status === "error") && (
-              <ErrorBlock
-                message={
-                  analyses.status === "error" ? analyses.message : "Couldn't load findings. Please try again."
-                }
-                onRetry={ready ? () => loadAll(API_URL, matterId, docId, false) : undefined}
-              />
-            )}
-            {analyses.status === "ready" &&
-              findings.status === "ready" &&
-              (docAnalyses.length === 0 ? (
-                <EmptyState
-                  title="No findings yet"
-                  body="Findings will appear here after analysis runs over this document."
-                />
-              ) : (
-                <div className="space-y-8">
-                  {analysisInProgress && (
-                    <LoadingLine>
-                      Analysis in progress… verified findings appear below as sections complete.
-                    </LoadingLine>
+          {(failedAnalyses.length > 0 || limitedAnalyses.length > 0) && (
+            <div className="mt-6 space-y-3">
+              {failedAnalyses.map((item) => (
+                <p key={item.id} className="text-sm text-red-700" role="alert">
+                  The latest analysis failed. Retry above to try again; earlier verified
+                  results are kept below.
+                </p>
+              ))}
+              {limitedAnalyses.map((item) => (
+                <div
+                  key={item.id}
+                  className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3"
+                >
+                  <p className="text-sm text-amber-800">
+                    Analysis covered only part of this document
+                    {item.totalPages !== undefined
+                      ? ` (${item.pagesAnalyzed ?? 0} of ${item.totalPages} pages)`
+                      : ""}
+                    .
+                  </p>
+                  {item.limitations.length > 0 && (
+                    <ul className="mt-1 list-disc pl-5 text-sm text-amber-800">
+                      {item.limitations.map((limitation, index) => (
+                        <li key={index}>{limitation}</li>
+                      ))}
+                    </ul>
                   )}
-                  {failedAnalyses.map((item) => (
-                    <p key={item.id} className="text-sm text-red-700" role="alert">
-                      The latest analysis failed. Retry above to try again; earlier verified
-                      results are kept below.
-                    </p>
-                  ))}
-                  {limitedAnalyses.map((item) => (
-                    <div
-                      key={item.id}
-                      className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3"
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-6 grid items-start gap-6 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+            <section aria-label="Document viewer" className="min-h-0 min-w-0">
+              <div className="h-[65vh] lg:sticky lg:top-6 lg:h-[calc(100vh-3rem)]">
+                {viewerUrl === null ? (
+                  <div className="flex h-full items-center justify-center rounded-lg border border-slate-200 bg-white px-6">
+                    <LoadingLine>Loading document…</LoadingLine>
+                  </div>
+                ) : awaitingUpload ? (
+                  <div className="flex h-full items-center justify-center rounded-lg border border-slate-200 bg-white px-6">
+                    <LoadingLine>
+                      Saving the file… the viewer appears automatically.
+                    </LoadingLine>
+                  </div>
+                ) : (
+                  <PdfViewer
+                    key={viewerUrl}
+                    url={viewerUrl}
+                    page={viewerPage}
+                    excerpt={viewerExcerpt}
+                    highlightKey={selectedFinding?.id ?? ""}
+                    onPagesKnown={setViewerNumPages}
+                    onPageChange={onViewerPageChange}
+                    onHighlight={setHighlight}
+                  />
+                )}
+              </div>
+            </section>
+
+            <section aria-label="Findings" className="min-h-0 min-w-0">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">Findings</h2>
+                  <p className="mt-0.5 text-sm text-slate-600">
+                    {docFindings.length === 0
+                      ? "Due-diligence issues, each linked to its evidence."
+                      : `${visibleFindings.length} of ${docFindings.length} · ${railFilterSummary}`}
+                  </p>
+                </div>
+                {visibleFindings.length > 0 && (
+                  <Button size="sm" variant="primary" onClick={() => setReviewOpen(true)}>
+                    Review
+                  </Button>
+                )}
+              </div>
+
+              {docFindings.length > 0 && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <div
+                    className="flex items-center gap-1 text-[13px]"
+                    role="group"
+                    aria-label="Filter by severity"
+                  >
+                    {(
+                      [
+                        ["all", `All (${docFindings.length})`],
+                        ["high", `High (${severityCounts.high})`],
+                        ["medium", `Medium (${severityCounts.medium})`],
+                        ["low", `Low (${severityCounts.low})`],
+                      ] as Array<["all" | FindingSeverity, string]>
+                    ).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setSeverityFilter(value)}
+                        aria-pressed={severityFilter === value}
+                        className={`rounded-full px-2.5 py-1 font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800 ${
+                          severityFilter === value
+                            ? "bg-slate-900 text-white"
+                            : "text-slate-600 hover:bg-slate-100"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <select
+                    aria-label="Filter by review status"
+                    value={statusFilter}
+                    onChange={(event) =>
+                      setStatusFilter(event.target.value as "all" | ReviewStatus)
+                    }
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[13px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-800"
+                  >
+                    <option value="all">All statuses</option>
+                    {(Object.keys(REVIEW_STATUS_LABELS) as ReviewStatus[]).map((status) => (
+                      <option key={status} value={status}>
+                        {REVIEW_STATUS_LABELS[status]}
+                      </option>
+                    ))}
+                  </select>
+                  {railFiltered && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSeverityFilter("all");
+                        setStatusFilter("all");
+                      }}
+                      className="rounded px-1 text-[13px] font-medium text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
                     >
-                      <p className="text-sm text-amber-800">
-                        Analysis covered only part of this document
-                        {item.totalPages !== undefined
-                          ? ` (${item.pagesAnalyzed ?? 0} of ${item.totalPages} pages)`
-                          : ""}
-                        .
-                      </p>
+                      Clear
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-3 rounded-lg border border-slate-200 bg-white px-4 py-3">
+                {selectedFinding === undefined ? (
+                  <p className="text-sm text-slate-600">
+                    Select a finding below to locate its evidence in the PDF.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-[13px] font-medium text-slate-700">
+                      Evidence
+                      {selectedFinding.page !== null
+                        ? ` · Page ${selectedPdfPage ?? selectedFinding.page}`
+                        : " · no page cited"}
+                    </p>
+                    <blockquote className="mt-1 border-l-2 border-slate-300 pl-3 text-sm text-slate-600">
+                      <p className="whitespace-pre-wrap break-words">{selectedFinding.excerpt}</p>
+                    </blockquote>
+                    <p className="mt-1 text-[13px] text-slate-600" role="status">
+                      {selectedFinding.page === null
+                        ? "This finding cites no page number, so the viewer stays put."
+                        : highlight === null
+                          ? `Locating evidence on page ${selectedPdfPage}…`
+                          : highlight.matches > 0
+                            ? `Highlighted on page ${selectedPdfPage} (${highlight.matches} ${highlight.matches === 1 ? "match" : "matches"}).`
+                            : `Exact position not found on page ${selectedPdfPage} — line wrapping or text differences; the excerpt above is the evidence.`}
+                    </p>
+                  </>
+                )}
+              </div>
+
+              <div className="mt-4 space-y-8">
+                {(analyses.status === "loading" || findings.status === "loading") && (
+                  <LoadingLine>Loading findings…</LoadingLine>
+                )}
+                {(analyses.status === "error" || findings.status === "error") && (
+                  <ErrorBlock
+                    message={
+                      analyses.status === "error"
+                        ? analyses.message
+                        : "Couldn't load findings. Please try again."
+                    }
+                    onRetry={ready ? () => loadAll(API_URL, matterId, docId, false) : undefined}
+                  />
+                )}
+                {analyses.status === "ready" &&
+                  findings.status === "ready" &&
+                  (docAnalyses.length === 0 ? (
+                    <EmptyState
+                      title="No findings yet"
+                      body="Findings will appear here after analysis runs over this document."
+                    />
+                  ) : (
+                    <>
+                      {analysisInProgress && (
+                        <LoadingLine>
+                          Analysis in progress… verified findings appear below as sections
+                          complete.
+                        </LoadingLine>
+                      )}
+                      {docFindings.length === 0 ? (
+                        <FindingsEmpty
+                          input={{
+                            analysisInProgress,
+                            failedCount: failedAnalyses.length,
+                            limitedCount: limitedAnalyses.length,
+                            completedCount: completedAnalyses.length,
+                          }}
+                        />
+                      ) : visibleFindings.length === 0 ? (
+                        <EmptyState
+                          title="No findings match these filters"
+                          body="Loosen or clear the filters to see the rest."
+                        />
+                      ) : (
+                        <FindingGroups
+                          findings={visibleFindings}
+                          showFilename={false}
+                          onReviewChange={(finding, reviewStatus) => {
+                            void onReviewChange(finding, reviewStatus).catch(() => undefined);
+                          }}
+                          selectedId={selectedFinding?.id ?? null}
+                          onSelect={selectFinding}
+                        />
+                      )}
+                    </>
+                  ))}
+                <p className="text-[13px] text-slate-500">
+                  Findings are issue-spotting results for human review, not legal advice.
+                </p>
+              </div>
+              {findingsError !== null && (
+                <p className="mt-2 text-sm text-red-700" role="alert">
+                  {findingsError}
+                </p>
+              )}
+            </section>
+          </div>
+
+          {history.length > 0 && latestHistory !== undefined && (
+            <Section
+              label="Analysis history"
+              description="Every analysis run for this document, newest first."
+              action={
+                <Button size="sm" onClick={() => setHistoryOpen((open) => !open)} aria-expanded={historyOpen}>
+                  {historyOpen ? "Hide history" : `Show all ${history.length} runs`}
+                </Button>
+              }
+            >
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <Badge
+                  tone={
+                    latestHistory.status === "completed"
+                      ? "success"
+                      : latestHistory.status === "limited"
+                        ? "warning"
+                        : latestHistory.status === "failed"
+                          ? "danger"
+                          : "info"
+                  }
+                >
+                  {latestHistory.status === "completed"
+                    ? "Completed"
+                    : latestHistory.status === "limited"
+                      ? "Partial"
+                      : latestHistory.status === "failed"
+                        ? "Failed"
+                        : "Running"}
+                </Badge>
+                <span className="tabular-nums text-slate-600">
+                  {formatDate(latestHistory.startedAt)}
+                </span>
+                {historyDuration !== null && (
+                  <span className="tabular-nums text-slate-500">· {historyDuration}</span>
+                )}
+                {latestHistory.totalPages !== undefined && (
+                  <span className="tabular-nums text-slate-500">
+                    · {latestHistory.pagesAnalyzed ?? 0} of {latestHistory.totalPages} pages
+                  </span>
+                )}
+              </div>
+              {currentHistory !== undefined && currentHistory.id !== latestHistory.id ? (
+                <p className="mt-1 text-[13px] text-slate-600">
+                  Showing results from the {formatDate(currentHistory.startedAt)}{" "}
+                  {currentHistory.status === "completed" ? "completed" : "partial"} run — the
+                  latest attempt did not produce results.
+                </p>
+              ) : (
+                <p className="mt-1 text-[13px] text-slate-600">
+                  {docFindings.length === 0
+                    ? "No current findings from this run."
+                    : `${docFindings.length} current ${docFindings.length === 1 ? "finding" : "findings"} from this run.`}
+                </p>
+              )}
+              {historyOpen && (
+                <ul className="mt-3 space-y-2">
+                  {history.map((item) => (
+                    <li
+                      key={item.id}
+                      className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge
+                          tone={
+                            item.status === "completed"
+                              ? "success"
+                              : item.status === "limited"
+                                ? "warning"
+                                : item.status === "failed"
+                                  ? "danger"
+                                  : "info"
+                          }
+                        >
+                          {item.status === "completed"
+                            ? "Completed"
+                            : item.status === "limited"
+                              ? "Partial"
+                              : item.status === "failed"
+                                ? "Failed"
+                                : "Running"}
+                        </Badge>
+                        <span className="tabular-nums text-slate-600">
+                          {formatDate(item.startedAt)}
+                        </span>
+                        {item.totalPages !== undefined && (
+                          <span className="tabular-nums text-slate-500">
+                            {item.pagesAnalyzed ?? 0} of {item.totalPages} pages
+                          </span>
+                        )}
+                      </div>
                       {item.limitations.length > 0 && (
-                        <ul className="mt-1 list-disc pl-5 text-sm text-amber-800">
+                        <ul className="mt-1 list-disc pl-5 text-[13px] text-slate-600">
                           {item.limitations.map((limitation, index) => (
                             <li key={index}>{limitation}</li>
                           ))}
                         </ul>
                       )}
-                    </div>
+                    </li>
                   ))}
-                  {docFindings.length === 0 ? (
-                    <FindingsEmpty
-                      input={{
-                        analysisInProgress,
-                        failedCount: failedAnalyses.length,
-                        limitedCount: limitedAnalyses.length,
-                        completedCount: completedAnalyses.length,
-                      }}
-                    />
-                  ) : visibleFindings.length === 0 ? (
-                    <EmptyState
-                      title="No findings at this severity"
-                      body="Try another severity filter to see the rest."
-                    />
-                  ) : (
-                    <FindingGroups
-                      findings={visibleFindings}
-                      showFilename={false}
-                      onReviewChange={(finding, reviewStatus) =>
-                        void onReviewChange(finding, reviewStatus)
-                      }
-                    />
-                  )}
-                  <p className="text-[13px] text-slate-500">
-                    Findings are issue-spotting results for human review, not legal advice.
-                  </p>
-                </div>
-              ))}
-            {findingsError !== null && (
-              <p className="mt-2 text-sm text-red-700" role="alert">
-                {findingsError}
-              </p>
-            )}
-          </Section>
-
-          {history.length > 0 && (
-            <Section
-              label="Analysis history"
-              description="Every analysis run for this document, newest first."
-            >
-              <ul className="space-y-2">
-                {history.map((item) => (
-                  <li
-                    key={item.id}
-                    className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge
-                        tone={
-                          item.status === "completed"
-                            ? "success"
-                            : item.status === "limited"
-                              ? "warning"
-                              : item.status === "failed"
-                                ? "danger"
-                                : "info"
-                        }
-                      >
-                        {item.status === "completed"
-                          ? "Completed"
-                          : item.status === "limited"
-                            ? "Partial"
-                            : item.status === "failed"
-                              ? "Failed"
-                              : "Running"}
-                      </Badge>
-                      <span className="tabular-nums text-slate-600">
-                        {formatDate(item.startedAt)}
-                      </span>
-                      {item.totalPages !== undefined && (
-                        <span className="tabular-nums text-slate-500">
-                          {item.pagesAnalyzed ?? 0} of {item.totalPages} pages
-                        </span>
-                      )}
-                    </div>
-                    {item.limitations.length > 0 && (
-                      <ul className="mt-1 list-disc pl-5 text-[13px] text-slate-600">
-                        {item.limitations.map((limitation, index) => (
-                          <li key={index}>{limitation}</li>
-                        ))}
-                      </ul>
-                    )}
-                  </li>
-                ))}
-              </ul>
+                </ul>
+              )}
             </Section>
           )}
 
@@ -883,17 +1193,48 @@ export default function DocumentDetailPage() {
                 {extractionErrorMessage(doc.value.extractionError)}
               </p>
             )}
-            {doc.value.extractedText !== undefined && (
-              <details className="mt-3 rounded-lg border border-slate-200 bg-white px-4 py-3">
-                <summary className="cursor-pointer text-sm font-medium text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800">
-                  Extracted text
-                </summary>
+            <div className="mt-3 rounded-lg border border-slate-200 bg-white px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm font-medium text-slate-900">Extracted text</p>
+                <Button size="sm" onClick={toggleText} aria-expanded={textOpen}>
+                  {textOpen ? "Hide text" : "Show text"}
+                </Button>
+              </div>
+              {textOpen && (
                 <div className="mt-2">
-                  <ExtractedText text={doc.value.extractedText} />
+                  {(docText === null || docText.status === "loading") && (
+                    <LoadingLine>Loading extracted text…</LoadingLine>
+                  )}
+                  {docText !== null && docText.status === "error" && (
+                    <ErrorBlock message={docText.message} />
+                  )}
+                  {docText !== null &&
+                    docText.status === "ready" &&
+                    (docText.value.extractedText !== undefined ? (
+                      <ExtractedText text={docText.value.extractedText} />
+                    ) : (
+                      <p className="text-sm text-slate-600">
+                        No extracted text available
+                        {docText.value.extractionStatus !== "completed"
+                          ? ` (extraction ${docText.value.extractionStatus.replace("_", " ")}).`
+                          : "."}
+                      </p>
+                    ))}
                 </div>
-              </details>
-            )}
+              )}
+            </div>
           </Section>
+
+          {reviewOpen && (
+            <ReviewQueue
+              findings={visibleFindings}
+              initialId={selectedFindingId}
+              heading="Review queue"
+              subheading={`${visibleFindings.length} findings · ${railFilterSummary}`}
+              onUpdate={onReviewChange}
+              onClose={() => setReviewOpen(false)}
+            />
+          )}
         </>
       )}
     </main>

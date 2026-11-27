@@ -486,6 +486,61 @@ describe("GET analyses and findings", () => {
     expect(body.map((f) => f["title"])).toEqual(["Current"]);
   });
 
+  it("exposes the current successful run beside a newer failed attempt", async () => {
+    seedDoc({ text: TEXT });
+    const goodRunId = new ObjectId();
+    const badRunId = new ObjectId();
+    fake.runState.push(
+      {
+        _id: goodRunId,
+        matterId: new ObjectId(MATTER_ID),
+        docId: new ObjectId(DOC_ID),
+        status: "completed",
+        limitations: [],
+        startedAt: new Date("2026-01-01T00:00:00.000Z"),
+        finishedAt: new Date("2026-01-01T00:01:00.000Z"),
+      },
+      {
+        _id: badRunId,
+        matterId: new ObjectId(MATTER_ID),
+        docId: new ObjectId(DOC_ID),
+        status: "failed",
+        error: "unavailable",
+        limitations: [],
+        startedAt: new Date("2026-02-01T00:00:00.000Z"),
+        finishedAt: new Date("2026-02-01T00:01:00.000Z"),
+      },
+    );
+    app = await startApp(URI);
+    const res = await fetch(`${app.baseUrl}/api/matters/${MATTER_ID}/analyses`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { analyses: Array<Record<string, unknown>> };
+    expect(body.analyses).toHaveLength(1);
+    expect(body.analyses[0]).toMatchObject({ status: "failed" });
+    expect(body.analyses[0]?.["current"]).toMatchObject({
+      id: goodRunId.toHexString(),
+      status: "completed",
+    });
+  });
+
+  it("reports no current run when nothing succeeded yet", async () => {
+    seedDoc({ text: TEXT });
+    fake.runState.push({
+      _id: new ObjectId(),
+      matterId: new ObjectId(MATTER_ID),
+      docId: new ObjectId(DOC_ID),
+      status: "running",
+      limitations: [],
+      startedAt: new Date(),
+    });
+    app = await startApp(URI);
+    const res = await fetch(`${app.baseUrl}/api/matters/${MATTER_ID}/analyses`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { analyses: Array<Record<string, unknown>> };
+    expect(body.analyses).toHaveLength(1);
+    expect(body.analyses[0]).toMatchObject({ status: "running", current: null });
+  });
+
   it("lists latest runs and current findings for the matter", async () => {
     seedDoc({ text: TEXT });
     const runId = new ObjectId();

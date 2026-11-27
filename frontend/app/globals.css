@@ -4,4 +4,43 @@
   :root {
     color-scheme: light;
   }
+  /* Tailwind v4 defaults buttons to an arrow cursor; every button here is
+   * clickable, so restore the pointer (except while disabled). */
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/* In-browser PDF viewer: canvas paint with a transparent selectable text
+ * layer on top. pdf.js positions each run inline; these rules supply the
+ * transparency, selection color, and evidence-highlight treatment. */
+.pdf-page {
+  position: relative;
+}
+
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  user-select: text;
+}
+
+.pdf-text-layer > div,
+.pdf-text-layer > span {
+  position: absolute;
+  white-space: pre;
+  transform-origin: 0 0;
+  color: transparent;
+}
+
+.pdf-text-layer ::selection {
+  background: rgb(0 0 255 / 0.25);
+}
+
+.pdf-text-layer .pdf-mark {
+  color: transparent;
+  background: rgb(250 204 21 / 0.5);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgb(202 138 4 / 0.6);
 }

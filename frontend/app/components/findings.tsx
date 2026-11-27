@@ -30,16 +30,23 @@ export function FindingCard({
   open,
   onToggle,
   onReviewChange,
+  selected = false,
 }: {
   finding: Finding;
   showFilename: boolean;
   open: boolean;
   onToggle: () => void;
   onReviewChange: (finding: Finding, reviewStatus: ReviewStatus) => void;
+  selected?: boolean;
 }) {
   const bodyId = `finding-body-${finding.id}`;
   return (
-    <li className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+    <li
+      id={`finding-card-${finding.id}`}
+      className={`scroll-mt-24 rounded-lg border bg-white px-4 py-3 ${
+        selected ? "border-blue-800 ring-2 ring-blue-800/30" : "border-slate-200"
+      }`}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
@@ -87,7 +94,7 @@ export function FindingCard({
             <p className="mt-1 text-[13px] text-slate-500">
               {showFilename ? (
                 <Link
-                  href={`/matters/${finding.matterId}/docs/${finding.docId}`}
+                  href={`/matters/${finding.matterId}/docs/${finding.docId}?finding=${finding.id}`}
                   className="rounded font-medium text-blue-800 hover:text-blue-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800"
                 >
                   {finding.filename ?? "Document"}
@@ -120,10 +127,15 @@ export function FindingGroups({
   findings,
   showFilename,
   onReviewChange,
+  selectedId = null,
+  onSelect,
 }: {
   findings: Finding[];
   showFilename: boolean;
   onReviewChange: (finding: Finding, reviewStatus: ReviewStatus) => void;
+  /** Ringed as the viewer-synced finding; does not force expansion. */
+  selectedId?: string | null;
+  onSelect?: (finding: Finding) => void;
 }) {
   // Independently collapsible cards: any number may stay open at once.
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
@@ -175,8 +187,12 @@ export function FindingGroups({
                   finding={finding}
                   showFilename={showFilename}
                   open={openIds.has(finding.id)}
-                  onToggle={() => toggle(finding.id)}
+                  onToggle={() => {
+                    toggle(finding.id);
+                    onSelect?.(finding);
+                  }}
                   onReviewChange={onReviewChange}
+                  selected={selectedId === finding.id}
                 />
               ))}
             </ul>

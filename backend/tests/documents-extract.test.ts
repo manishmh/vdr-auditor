@@ -113,7 +113,9 @@ describe("POST extract", () => {
     expect(body).toMatchObject({ id: DOC_ID, extractionStatus: "completed", pageCount: 2 });
     expect(body["extractedText"]).toBe(`Hello page one${PAGE_SEPARATOR}Second page here`);
     expect(body["extractedAt"]).toBeDefined();
+    expect(body["pageOffset"]).toBe(0);
     expect(storedDoc()).toMatchObject({ extractionStatus: "completed", pageCount: 2 });
+    expect(storedDoc()?.pageOffset).toBe(0);
     expect(storedDoc()?.extractedText).toContain("Hello page one");
   });
 

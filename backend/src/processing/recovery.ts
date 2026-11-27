@@ -1,6 +1,7 @@
 import type { AnalysisSettings } from "../ai/analysis.js";
 import type { MetaConfig } from "../ai/metaClient.js";
 import { getAnalysesCollections } from "../db/analyses.js";
+import { getDocumentsCollection } from "../db/documents.js";
 import { getProcessingRuns } from "../db/processing.js";
 import { isTerminalProcessingStage, type ProcessingRunRecord } from "../models/processing.js";
 import {
@@ -14,6 +15,12 @@ import {
 export const RECOVERY_INTERVAL_MS = 60 * 1000;
 /** Max runs driven per sweep; each sweep is bounded work. */
 export const RECOVERY_BATCH_SIZE = 25;
+/**
+ * Age past which a still-unstored upload is declared interrupted. Healthy
+ * stores finish in seconds; anything this old lost its background task
+ * (restart, killed function) and its bytes are unrecoverable by design.
+ */
+export const UPLOAD_INTERRUPTED_MS = 5 * 60 * 1000;
 
 export interface RecoveryOptions {
   mongodbUri: string;
@@ -79,6 +86,12 @@ export async function recoverProcessingRuns(options: RecoveryOptions): Promise<R
     return { ...result, errors: 1 };
   }
   result.staleAnalysesFailed = await failOrphanedAnalysisRuns(options, maxAgeMs).catch(() => 0);
+  const interruptedUploads = await failInterruptedUploads(options).catch(() => 0);
+  if (interruptedUploads > 0) {
+    console.log(
+      JSON.stringify({ scope: "processing", event: "uploads-interrupted", count: interruptedUploads }),
+    );
+  }
   const candidates = await runs
     .find({
       active: true,
@@ -162,6 +175,44 @@ async function failOrphanedAnalysisRuns(
       .updateOne(
         { _id: orphan._id, status: "running" },
         { $set: { status: "failed", error: "interrupted", finishedAt: new Date() } },
+      )
+      .catch(() => null);
+    if (updated !== null && updated.matchedCount === 1) {
+      failed += 1;
+    }
+  }
+  return failed;
+}
+
+/**
+ * Fail uploads whose bytes never arrived: records still marked unstored
+ * past the grace period lost their background persist task (restart, timed
+ * out function) and cannot heal — the bytes only existed in that task's
+ * memory. Failed records tell the user to delete and re-upload instead of
+ * sitting in limbo. Returns the number failed.
+ */
+async function failInterruptedUploads(options: RecoveryOptions): Promise<number> {
+  const documents = await getDocumentsCollection(options.mongodbUri, options.mongodbDbName);
+  const pending = await documents.find({ bytesStored: false }).toArray();
+  const cutoff = Date.now() - UPLOAD_INTERRUPTED_MS;
+  let failed = 0;
+  for (const doc of pending) {
+    if (doc.bytesStored !== false || doc.extractionStatus === "failed") {
+      continue;
+    }
+    if (doc.updatedAt.getTime() >= cutoff) {
+      continue;
+    }
+    const updated = await documents
+      .updateOne(
+        { _id: doc._id, bytesStored: false },
+        {
+          $set: {
+            extractionStatus: "failed",
+            extractionError: "upload_interrupted",
+            updatedAt: new Date(),
+          },
+        },
       )
       .catch(() => null);
     if (updated !== null && updated.matchedCount === 1) {
